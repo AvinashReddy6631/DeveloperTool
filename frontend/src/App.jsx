@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 
-const API_URL =
-  "https://mcporchestrator-production-9fa8.up.railway.app";
+
+  const API_URL = import.meta.env.VITE_API_URL;
 
 function App() {
   const [query, setQuery] = useState("");
