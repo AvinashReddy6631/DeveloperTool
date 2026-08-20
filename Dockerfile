@@ -39,12 +39,22 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY . .
 
 # ============================================================
+# NON-ROOT USER
+# ============================================================
+
+RUN useradd \
+        --create-home \
+        --shell /usr/sbin/nologin \
+        appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
+
+# ============================================================
 # API PORT
 # ============================================================
 
 EXPOSE 8000
-
-
 
 # ============================================================
 # CONTAINER HEALTH CHECK
@@ -52,6 +62,7 @@ EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+
 # ============================================================
 # START API
 # ============================================================

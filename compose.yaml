@@ -17,6 +17,17 @@ services:
 
     restart: unless-stopped
 
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+
+    tmpfs:
+      - /tmp
+
     healthcheck:
       test:
         [
