@@ -77,22 +77,56 @@ def insert_employees():
         ("Arjun", "Frontend Developer", 65000, "Google"),
     ]
 
-    cursor.executemany(
-        """
-        INSERT INTO employees
-            (name, role, salary, company)
-        VALUES
-            (%s, %s, %s, %s)
-        """,
-        employees,
-    )
+    inserted_count = 0
+    skipped_count = 0
+
+    for employee in employees:
+
+        name, role, salary, company = employee
+
+        cursor.execute(
+            """
+            SELECT 1
+            FROM employees
+            WHERE name = %s
+              AND role = %s
+              AND salary = %s
+              AND company = %s
+            LIMIT 1
+            """,
+            (name, role, salary, company),
+        )
+
+        exists = cursor.fetchone()
+
+        if exists:
+
+            skipped_count += 1
+
+        else:
+
+            cursor.execute(
+                """
+                INSERT INTO employees
+                    (name, role, salary, company)
+                VALUES
+                    (%s, %s, %s, %s)
+                """,
+                employee,
+            )
+
+            inserted_count += 1
 
     connection.commit()
 
     cursor.close()
     connection.close()
 
-    print("Employees inserted successfully!")
+    print(
+        f"Seed completed: "
+        f"{inserted_count} inserted, "
+        f"{skipped_count} skipped."
+    )
 
 
 # ============================================================
