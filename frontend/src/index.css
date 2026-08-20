@@ -1,0 +1,276 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ========================================
+   MCP ORCHESTRATOR - GLOBAL THEME
+======================================== */
+
+:root {
+  --background: #02030a;
+  --foreground: #f7f7ff;
+
+  --card: #080912;
+  --card-foreground: #f7f7ff;
+
+  --popover: #080912;
+  --popover-foreground: #f7f7ff;
+
+  --primary: #9a4dff;
+  --primary-foreground: #ffffff;
+
+  --secondary: #111322;
+  --secondary-foreground: #ffffff;
+
+  --muted: #111322;
+  --muted-foreground: #888da4;
+
+  --accent: #9a4dff;
+  --accent-foreground: #ffffff;
+
+  --destructive: #ef4444;
+
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: #9a4dff;
+
+  --radius: 0.75rem;
+
+  --sidebar: #080912;
+  --sidebar-foreground: #f7f7ff;
+  --sidebar-primary: #9a4dff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #111322;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #9a4dff;
+
+  --font-sans: "Geist Variable", Inter, system-ui, sans-serif;
+  --font-heading: "Geist Variable", Inter, system-ui, sans-serif;
+}
+
+/* ========================================
+   TAILWIND THEME
+======================================== */
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-heading: var(--font-heading);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* ========================================
+   DARK MODE
+======================================== */
+
+.dark {
+  --background: #02030a;
+  --foreground: #f7f7ff;
+
+  --card: #080912;
+  --card-foreground: #f7f7ff;
+
+  --popover: #080912;
+  --popover-foreground: #f7f7ff;
+
+  --primary: #9a4dff;
+  --primary-foreground: #ffffff;
+
+  --secondary: #111322;
+  --secondary-foreground: #ffffff;
+
+  --muted: #111322;
+  --muted-foreground: #888da4;
+
+  --accent: #9a4dff;
+  --accent-foreground: #ffffff;
+
+  --destructive: #ef4444;
+
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: #9a4dff;
+}
+
+/* ========================================
+   GLOBAL RESET
+======================================== */
+
+* {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+
+html {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100%;
+  scroll-behavior: smooth;
+  background: #02030a;
+  font-family: var(--font-sans);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-width: 320px;
+  min-height: 100vh;
+
+  background: #02030a;
+  color: #f7f7ff;
+
+  font-family: var(--font-sans);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  overflow-x: hidden;
+}
+
+/* ========================================
+   IMPORTANT:
+   REMOVE THE OLD 1126px ROOT LIMIT
+======================================== */
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+
+  text-align: left;
+
+  background: #02030a;
+}
+
+/* ========================================
+   TYPOGRAPHY
+======================================== */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading);
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+/* ========================================
+   SELECTION
+======================================== */
+
+::selection {
+  background: rgba(154, 77, 255, 0.35);
+  color: white;
+}
+
+/* ========================================
+   SCROLLBAR
+======================================== */
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #02030a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 90, 255, 0.35);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 90, 255, 0.6);
+}
+
+/* ========================================
+   MOBILE
+======================================== */
+
+@media (max-width: 650px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  #root {
+    width: 100%;
+  }
+}
+
+/* ========================================
+   SHADCN BASE
+======================================== */
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    @apply font-sans;
+  }
+}
