@@ -1,0 +1,31 @@
+services:
+  mcp-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: mcp-orchestrator-container
+
+    env_file:
+      - .env
+
+    ports:
+      - "8000:8000"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
