@@ -10,9 +10,14 @@ on:
       - main
 
 jobs:
+
   test:
 
     runs-on: ubuntu-latest
+
+    env:
+      OPENAI_API_KEY: "ci-test-key"
+      OPENROUTER_API_KEY: "ci-test-key"
 
     steps:
 
@@ -32,7 +37,8 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest -v
+          python -m pytest -v tests
+
 
   docker:
 
