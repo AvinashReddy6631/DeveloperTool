@@ -286,11 +286,7 @@ async def query_agent(
         # API ANSWER DEBUG
         # ----------------------------------------------------
 
-        print()
-        print("API ANSWER BEFORE RESPONSE:")
-        print(repr(answer))
-        print()
-
+      
         # ----------------------------------------------------
         # RESPONSE LOG
         # ----------------------------------------------------
