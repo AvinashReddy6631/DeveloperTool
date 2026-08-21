@@ -1,4 +1,3 @@
-
 import psycopg2
 import os
 from dotenv import load_dotenv
@@ -119,6 +118,169 @@ def employees_earning_more_than(min_salary):
         f"Salary: {employee[2]}"
         for employee in employees
     )
+def create_conversation_table():
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id SERIAL PRIMARY KEY,
+                session_id VARCHAR(255) NOT NULL,
+                user_query TEXT NOT NULL,
+                resolved_query TEXT,
+                agent VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        connection.commit()
+
+    finally:
+        cursor.close()
+        connection.close()
+
+# ============================================
+# Conversation Memory
+# ============================================
+
+def save_conversation(
+    session_id,
+    user_query,
+    resolved_query,
+    agent
+):
+    """Save one conversation turn in PostgreSQL."""
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            INSERT INTO conversations (
+                session_id,
+                user_query,
+                resolved_query,
+                agent
+            )
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                session_id,
+                user_query,
+                resolved_query,
+                agent
+            )
+        )
+
+        connection.commit()
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_conversation_history(
+    session_id,
+    limit=8
+):
+    """Return recent conversation turns for one session."""
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT
+                user_query,
+                resolved_query,
+                agent
+            FROM conversations
+            WHERE session_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (
+                session_id,
+                limit
+            )
+        )
+
+        rows = cursor.fetchall()
+
+    finally:
+        cursor.close()
+        connection.close()
+
+    # Query returns newest first. Reverse so the caller receives
+    # chronological conversation order.
+    rows.reverse()
+
+    return rows
+
+
+def get_recent_conversation_context(
+    session_id,
+    limit=8
+):
+    """Return recent conversation history as context text."""
+
+    rows = get_conversation_history(
+        session_id,
+        limit
+    )
+
+    if not rows:
+        return ""
+
+    context_lines = []
+
+    for user_query, resolved_query, agent in rows:
+
+        context_lines.append(
+            f"User: {user_query}"
+        )
+
+        if resolved_query:
+            context_lines.append(
+                f"Resolved: {resolved_query}"
+            )
+
+        if agent:
+            context_lines.append(
+                f"Agent: {agent}"
+            )
+
+    return "\n".join(context_lines)
+
+
+def clear_conversation(session_id):
+    """Delete all stored conversation history for one session."""
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            DELETE FROM conversations
+            WHERE session_id = %s
+            """,
+            (session_id,)
+        )
+
+        deleted_rows = cursor.rowcount
+
+        connection.commit()
+
+    finally:
+        cursor.close()
+        connection.close()
+
+    return deleted_rows
 
 
 # ============================================

@@ -55,6 +55,16 @@ class QueryRequest(BaseModel):
         description="User query for the MCP orchestrator."
     )
 
+    session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Optional conversation session identifier. "
+            "Requests without one use the legacy default session."
+        )
+    )
+
 
 # ============================================================
 # RESPONSE MODEL
@@ -71,6 +81,8 @@ class QueryResponse(BaseModel):
     execution_time: float
 
     error: str | None = None
+
+    execution_trace: dict | None = None
 
 
 # ============================================================
@@ -181,6 +193,14 @@ async def query_agent(
 
     query = request.query.strip()
 
+    # Preserve backward compatibility for existing clients/tests.
+    # The frontend will provide a real session_id for isolated memory.
+    session_id = (
+        request.session_id.strip()
+        if request.session_id
+        else "default"
+    )
+
     # --------------------------------------------------------
     # EMPTY QUERY
     # --------------------------------------------------------
@@ -214,6 +234,11 @@ async def query_agent(
         query
     )
 
+    print(
+        "Session ID:",
+        session_id
+    )
+
     print("=" * 60)
 
     try:
@@ -222,7 +247,10 @@ async def query_agent(
         # ORCHESTRATOR
         # ----------------------------------------------------
 
-        result = await orchestrate(query)
+        result = await orchestrate(
+            query,
+            session_id
+        )
 
         # ----------------------------------------------------
         # EXECUTION TIME
@@ -237,7 +265,10 @@ async def query_agent(
         # INVALID RESULT
         # ----------------------------------------------------
 
-        if not isinstance(result, dict):
+        if not isinstance(
+            result,
+            dict
+        ):
 
             return QueryResponse(
                 request_id=request_id,
@@ -247,7 +278,8 @@ async def query_agent(
                 error=(
                     "Orchestrator returned "
                     "an invalid result."
-                )
+                ),
+                execution_trace=None
             )
 
         # ----------------------------------------------------
@@ -265,6 +297,32 @@ async def query_agent(
 
         error = result.get(
             "error"
+        )
+
+        # FIX:
+        # Always define execution_trace before the response.
+        execution_trace = result.get(
+            "execution_trace"
+        )
+        # --------------------------------------------------------
+# FRIENDLY OPENROUTER RATE-LIMIT MESSAGE
+# --------------------------------------------------------
+
+        if status == "error" and error:
+
+            error_text = str(error)
+
+            if (
+                "429" in error_text
+                or "Rate limit exceeded" in error_text
+                or "free-models-per-day" in error_text
+            ):
+
+                error = (
+                    "AI request limit reached. "
+                    "The free AI model limit has been reached for today. "
+                    "Your MCP system is working correctly. "
+                    "Please wait for the limit to reset and try again."
         )
 
         # ----------------------------------------------------
@@ -319,7 +377,8 @@ async def query_agent(
             status=status,
             answer=answer,
             execution_time=execution_time,
-            error=error
+            error=error,
+            execution_trace=execution_trace
         )
 
     except Exception as exc:
@@ -409,7 +468,8 @@ async def query_agent(
             status="error",
             answer=None,
             execution_time=execution_time,
-            error=error_message
+            error=error_message,
+            execution_trace=None
         )
 
 

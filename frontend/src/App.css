@@ -2145,3 +2145,244 @@ button {
   }
 
 }
+
+
+/* =========================================================
+   REAL MCP EXECUTION TRACE
+   Added for the dynamic execution-trace UI in App.jsx
+========================================================= */
+
+.trace-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.trace-tool {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(160, 100, 255, 0.10);
+  border-radius: 12px;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(140, 80, 255, 0.045),
+      rgba(255, 255, 255, 0.018)
+    );
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    transform 0.2s ease;
+}
+
+.trace-tool:hover {
+  transform: translateY(-1px);
+  border-color: rgba(160, 100, 255, 0.20);
+  background:
+    linear-gradient(
+      135deg,
+      rgba(140, 80, 255, 0.075),
+      rgba(255, 255, 255, 0.025)
+    );
+}
+
+.trace-tool-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.trace-check {
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(55, 220, 170, 0.14);
+  border-radius: 8px;
+  background: rgba(55, 220, 170, 0.07);
+  color: #55dfaf;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.trace-tool-main > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.trace-tool-main strong {
+  display: block;
+  overflow: hidden;
+  color: #d8d4e4;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-tool-main span:not(.trace-check) {
+  display: block;
+  overflow: hidden;
+  color: #66687a;
+  font-size: 6px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-tool-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-shrink: 0;
+}
+
+.trace-tool-meta span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #78798a;
+  font-size: 6px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.trace-tool-meta span:first-child {
+  color: #55dfaf;
+  border: 1px solid rgba(55, 220, 170, 0.10);
+  background: rgba(55, 220, 170, 0.035);
+}
+
+.trace-tool-meta span:last-child {
+  color: #9a7adb;
+  border: 1px solid rgba(160, 100, 255, 0.08);
+  background: rgba(160, 100, 255, 0.035);
+}
+
+.trace-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.trace-summary > div {
+  min-width: 0;
+  padding: 11px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.trace-summary > div span,
+.trace-summary > div strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-summary > div span {
+  margin-bottom: 4px;
+  color: #4b4c5d;
+  font-size: 5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.trace-summary > div strong {
+  color: #b5b1c1;
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.agent-information .agent-cards {
+  margin-top: 10px;
+}
+
+.agent-information .agent-card {
+  min-height: 48px;
+}
+
+.agent-information .agent-card strong {
+  color: #c7c3d2;
+  font-size: 8px;
+}
+
+.agent-information .agent-card span {
+  color: #666778;
+  font-size: 6px;
+}
+
+@media (max-width: 800px) {
+  .trace-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trace-tool {
+    align-items: flex-start;
+  }
+
+  .trace-tool-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 600px) {
+  .trace-tools {
+    gap: 6px;
+  }
+
+  .trace-tool {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .trace-tool-meta {
+    flex-direction: row;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .trace-tool-meta span {
+    flex: 1;
+  }
+
+  .trace-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .trace-summary > div {
+    padding: 9px;
+  }
+
+  .trace-summary > div strong {
+    font-size: 7px;
+  }
+
+  .trace-summary > div span {
+    font-size: 4px;
+  }
+}

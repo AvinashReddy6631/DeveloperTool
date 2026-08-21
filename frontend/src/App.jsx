@@ -1,8 +1,46 @@
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./App.css";
 
 
   const API_URL = import.meta.env.VITE_API_URL;
+
+const SESSION_STORAGE_KEY = "mcp_orchestrator_session_id";
+
+function getOrCreateSessionId() {
+  try {
+    const existing = localStorage.getItem(SESSION_STORAGE_KEY);
+
+    if (existing) {
+      return existing;
+    }
+
+    const generated =
+      typeof crypto !== "undefined" &&
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `session-${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      generated
+    );
+
+    return generated;
+  } catch (storageError) {
+    console.warn(
+      "Unable to access localStorage. Using an in-memory session ID.",
+      storageError
+    );
+
+    return `session-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+  }
+}
 
 function App() {
   const [query, setQuery] = useState("");
@@ -11,6 +49,7 @@ function App() {
   const [error, setError] = useState("");
   const [robotState, setRobotState] = useState("idle");
   const [greeting, setGreeting] = useState("");
+  const [sessionId] = useState(getOrCreateSessionId);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -42,6 +81,7 @@ function App() {
         },
         body: JSON.stringify({
           query: cleanQuery,
+          session_id: sessionId,
         }),
       });
 
@@ -54,10 +94,24 @@ function App() {
       const data = await result.json();
 
       if (data.status !== "success") {
-        throw new Error(
-          data.error || "The MCP agent could not process the request."
-        );
-      }
+  const backendError = data.error || "";
+
+  const isRateLimit =
+    backendError.includes("429") ||
+    backendError.toLowerCase().includes("rate limit") ||
+    backendError.toLowerCase().includes("free-models-per-day") ||
+    backendError.toLowerCase().includes("request limit");
+
+  if (isRateLimit) {
+    throw new Error(
+      "AI request limit reached. The free AI model limit has been reached for today. Your MCP system is working correctly. Please try again after the limit resets."
+    );
+  }
+
+  throw new Error(
+    backendError || "The MCP agent could not process the request."
+  );
+}
 
       setResponse(data);
       setRobotState("success");
@@ -65,9 +119,9 @@ function App() {
       console.error("MCP request failed:", err);
 
       setError(
-        err.message ||
-          "Unable to connect to the MCP Orchestrator."
-      );
+  err.message ||
+    "Unable to connect to the MCP Orchestrator."
+);
 
       setRobotState("error");
     } finally {
@@ -516,78 +570,190 @@ function App() {
                 </div>
 
                 <div className="answer-text">
-                  {response.answer}
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      table: ({ node, ...props }) => (
+                        <div className="markdown-table-wrapper">
+                          <table {...props} />
+                        </div>
+                      ),
+                      a: ({ node, ...props }) => (
+                        <a
+                          {...props}
+                          target="_blank"
+                          rel="noreferrer"
+                        />
+                      ),
+                    }}
+                  >
+                    {response.answer || ""}
+                  </ReactMarkdown>
                 </div>
 
               </div>
 
 
-              {/* Agent information */}
+              {/* Real MCP execution trace */}
               <div className="agent-information">
 
                 <div className="information-title">
-                  MCP EXECUTION
+                  MCP EXECUTION TRACE
                 </div>
 
-                <div className="agent-cards">
+                {response.execution_trace ? (
+                  <>
+                    <div className="agent-cards">
 
-                  <div className="agent-card">
+                      <div className="agent-card">
+                        <div className="agent-card-icon">
+                          ✦
+                        </div>
 
-                    <div className="agent-card-icon">
-                      ✦
+                        <div>
+                          <strong>
+                            MCP Engine
+                          </strong>
+
+                          <span>
+                            {response.execution_trace.orchestrator
+                              ? `Decision: ${response.execution_trace.orchestrator}`
+                              : "Orchestration"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {(response.execution_trace.agents || []).map(
+                        (agentName) => (
+                          <div
+                            className="agent-card"
+                            key={agentName}
+                          >
+                            <div className="agent-card-icon">
+                              {agentName === "salary_agent" ? "$" : "◈"}
+                            </div>
+
+                            <div>
+                              <strong>
+                                {agentName === "salary_agent"
+                                  ? "Salary Agent"
+                                  : agentName === "company_agent"
+                                    ? "Company Agent"
+                                    : agentName}
+                              </strong>
+
+                              <span>
+                                Completed successfully
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      )}
+
                     </div>
 
-                    <div>
-                      <strong>
-                        MCP Engine
-                      </strong>
+                    {(response.execution_trace.mcp_calls || []).length > 0 && (
+                      <div className="trace-tools">
+                        {(response.execution_trace.mcp_calls || []).map(
+                          (call, index) => (
+                            <div
+                              className="trace-tool"
+                              key={`${call.tool}-${index}`}
+                            >
+                              <div className="trace-tool-main">
+                                <span className="trace-check">✓</span>
 
-                      <span>
-                        Orchestration
-                      </span>
+                                <div>
+                                  <strong>{call.tool}</strong>
+
+                                  <span>
+                                    {call.agent || "MCP Agent"}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="trace-tool-meta">
+                                <span>{call.status}</span>
+
+                                <span>
+                                  {Number(call.execution_time || 0).toFixed(2)}s
+                                </span>
+                              </div>
+                            </div>
+                          )
+                        )}
+                      </div>
+                    )}
+
+                    <div className="trace-summary">
+                      <div>
+                        <span>ORCHESTRATOR</span>
+                        <strong>
+                          {response.execution_trace.orchestrator || "—"}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>AGENTS</span>
+                        <strong>
+                          {(response.execution_trace.agents || []).length}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>MCP CALLS</span>
+                        <strong>
+                          {(response.execution_trace.mcp_calls || []).length}
+                        </strong>
+                      </div>
+
+                      <div>
+                        <span>TOTAL TRACE</span>
+                        <strong>
+                          {Number(
+                            response.execution_trace.total_execution_time || 0
+                          ).toFixed(2)}
+                          s
+                        </strong>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="agent-cards">
+                    <div className="agent-card">
+                      <div className="agent-card-icon">
+                        ✦
+                      </div>
+
+                      <div>
+                        <strong>MCP Engine</strong>
+                        <span>Orchestration</span>
+                      </div>
                     </div>
 
+                    <div className="agent-card">
+                      <div className="agent-card-icon">
+                        $
+                      </div>
+
+                      <div>
+                        <strong>Salary Agent</strong>
+                        <span>Salary analysis</span>
+                      </div>
+                    </div>
+
+                    <div className="agent-card">
+                      <div className="agent-card-icon">
+                        ◈
+                      </div>
+
+                      <div>
+                        <strong>Company Agent</strong>
+                        <span>Company analysis</span>
+                      </div>
+                    </div>
                   </div>
-
-
-                  <div className="agent-card">
-
-                    <div className="agent-card-icon">
-                      $
-                    </div>
-
-                    <div>
-                      <strong>
-                        Salary Agent
-                      </strong>
-
-                      <span>
-                        Salary analysis
-                      </span>
-                    </div>
-
-                  </div>
-
-
-                  <div className="agent-card">
-
-                    <div className="agent-card-icon">
-                      ◈
-                    </div>
-
-                    <div>
-                      <strong>
-                        Company Agent
-                      </strong>
-
-                      <span>
-                        Company analysis
-                      </span>
-                    </div>
-
-                  </div>
-
-                </div>
+                )}
 
               </div>
 

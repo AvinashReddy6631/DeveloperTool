@@ -8,7 +8,13 @@ from openai import OpenAI
 
 from salary_agent import salary_agent
 from company_agent import company_agent
+from weather_agent import weather_agent
 from synthesizer import synthesize
+
+from database import (
+    save_conversation as db_save_conversation,
+    get_recent_conversation_context,
+)
 
 
 # ============================================================
@@ -314,10 +320,31 @@ def _record_agent_trace(trace, result, fallback_agent):
         )
 
 # ============================================================
-# CONVERSATION MEMORY
+# SESSION-BASED CONVERSATION MEMORY
 # ============================================================
 
-conversation_history = []
+# Each session gets its own conversation history.
+# This keeps one user's context isolated from another user's context.
+session_memories = {}
+
+# Backward-compatible default conversation history.
+#
+# Existing tests and older code use:
+#     orchestrator.conversation_history.clear()
+#
+# Keep this alias connected to the "default" session so those calls
+# continue to work without disabling session-based memory.
+conversation_history = session_memories.setdefault(
+    "default",
+    []
+)
+
+# Maximum history entries stored for each session.
+MAX_HISTORY_ENTRIES = 15
+
+# Maximum number of sessions kept in memory.
+# Old sessions are removed when this limit is exceeded.
+MAX_SESSIONS = 100
 
 
 # ============================================================
@@ -367,6 +394,15 @@ COMPANY
 - Companies in the database
 - General employee/company information
 
+WEATHER
+- Current weather
+- Temperature
+- Forecast
+- Rain
+- Humidity
+- Wind
+- Weather conditions
+
 BOTH
 Use BOTH when the user requests salary information AND
 company/employee information in the same request.
@@ -387,6 +423,9 @@ COMPANY
 
 Analyze Google and tell me who earns the most and what roles exist.
 BOTH
+
+What is the weather in Hyderabad?
+WEATHER
 
 Return ONLY:
 SALARY
@@ -445,32 +484,98 @@ def extract_companies(text):
 # RECENT CONTEXT
 # ============================================================
 
-def get_recent_context():
+def get_recent_context(session_id="default"):
+    """
+    Load recent context.
 
-    if not conversation_history:
+    Real browser sessions use PostgreSQL so context survives a
+    backend restart. The default session remains in-memory for
+    backward compatibility with the existing tests.
+    """
+
+    if session_id == "default":
+
+        history = session_memories.get(
+            session_id,
+            []
+        )
+
+        if not history:
+            return ""
+
+        return "\n".join(
+            history[-8:]
+        )
+
+    try:
+
+        context = get_recent_conversation_context(
+            session_id,
+            limit=8
+        )
+
+        if context:
+            return context
+
+    except Exception as exc:
+
+        print(
+            "\n⚠️ PostgreSQL context read failed:"
+        )
+
+        print(exc)
+
+        print(
+            "→ Falling back to in-memory history."
+        )
+
+    history = session_memories.get(
+        session_id,
+        []
+    )
+
+    if not history:
         return ""
 
     return "\n".join(
-        conversation_history[-8:]
+        history[-8:]
     )
+
 
 
 # ============================================================
 # LOCAL CONTEXT RESOLVER
 # ============================================================
 
-def local_context_resolution(user_query):
+def local_context_resolution(
+    user_query,
+    session_id="default"
+):
 
-    if not conversation_history:
-        return None
+    # PostgreSQL-backed sessions may have no in-memory history
+    # after a backend restart, so always load context through
+    # get_recent_context(). The helper uses PostgreSQL first for
+    # real sessions and falls back to memory if necessary.
 
     query = user_query.lower().strip()
 
-    history = get_recent_context()
+    history = get_recent_context(
+        session_id
+    )
+
+    if not history:
+        return None
     history_lower = history.lower()
 
     companies_in_history = extract_companies(history)
     companies_in_query = extract_companies(user_query)
+
+    # Most recent company known from persisted session context.
+    last_company = (
+        companies_in_history[-1]
+        if companies_in_history
+        else None
+    )
 
     # --------------------------------------------------------
     # "What about Microsoft?"
@@ -582,13 +687,55 @@ def local_context_resolution(user_query):
         or "their workforce" in query
     ):
 
-        if companies_in_history:
-
-            company = companies_in_history[-1]
+        if last_company:
 
             return (
                 f"Show me employees working "
-                f"at {company}."
+                f"at {last_company}."
+            )
+
+    # --------------------------------------------------------
+    # "What roles exist there?"
+    # "What roles are available there?"
+    # "Which roles are there?"
+    #
+    # Resolve these common follow-ups locally so they do not
+    # require an OpenRouter call.
+    # --------------------------------------------------------
+
+    if (
+        "what roles exist there" in query
+        or "what roles are there" in query
+        or "what roles exist here" in query
+        or "what roles are available there" in query
+        or "which roles are there" in query
+    ):
+
+        if last_company:
+
+            return (
+                f"What roles exist at {last_company}?"
+            )
+
+    # --------------------------------------------------------
+    # "Who works there?"
+    # "Show employees there."
+    # "Show me employees there."
+    #
+    # Resolve employee follow-ups locally as well.
+    # --------------------------------------------------------
+
+    if (
+        "who works there" in query
+        or "who works here" in query
+        or "show employees there" in query
+        or "show me employees there" in query
+    ):
+
+        if last_company:
+
+            return (
+                f"Show me employees working at {last_company}."
             )
 
     # --------------------------------------------------------
@@ -724,6 +871,26 @@ def local_route(user_query):
         and not has_salary
     ):
         return "COMPANY"
+
+    # ========================================================
+    # WEATHER
+    # ========================================================
+
+    weather_patterns = [
+        "weather",
+        "temperature",
+        "forecast",
+        "rain",
+        "humidity",
+        "wind",
+        "weather conditions",
+    ]
+
+    if any(
+        pattern in query
+        for pattern in weather_patterns
+    ):
+        return "WEATHER"
 
     # ========================================================
     # SALARY
@@ -912,16 +1079,23 @@ def fallback_agent(user_query):
 # LLM CONTEXT RESOLVER
 # ============================================================
 
-def contextualize_query(user_query):
+def contextualize_query(
+    user_query,
+    session_id="default"
+):
 
     # Never rewrite a complete current query.
     if local_route(user_query):
         return user_query
 
-    if not conversation_history:
-        return user_query
+    # PostgreSQL-backed sessions survive backend restarts.
+    # Always ask the context helper for persisted history.
+    history_text = get_recent_context(
+        session_id
+    )
 
-    history_text = get_recent_context()
+    if not history_text:
+        return user_query
 
     prompt = f"""
 You are a conversation context resolver.
@@ -1005,13 +1179,73 @@ Rules:
 # "What roles exist at Google?"
 # ============================================================
 
-def resolve_query(user_query):
+def resolve_query(
+    user_query,
+    session_id="default"
+):
+
+    query = user_query.lower().strip()
 
     # ========================================================
-    # 1. CURRENT QUERY FIRST
+    # 1. TRUE CONTEXT-DEPENDENT FOLLOW-UPS FIRST
+    #
+    # Examples:
+    #   "What roles exist there?"
+    #   "What roles are there?"
+    #   "Who works there?"
+    #   "Show employees there."
+    #
+    # These should use session memory before the direct router,
+    # because local_route() can otherwise classify "roles" or
+    # "employees" as a complete COMPANY query and skip context.
     # ========================================================
 
-    direct_route = local_route(user_query)
+    context_dependent_patterns = (
+        "there",
+        "here",
+        "its ",
+        "their ",
+        "it ",
+        "which one",
+        "the other one",
+        "what about",
+    )
+
+    is_context_dependent = any(
+        pattern in query
+        for pattern in context_dependent_patterns
+    )
+
+    if is_context_dependent:
+
+        contextual_query = local_context_resolution(
+            user_query,
+            session_id
+        )
+
+        if contextual_query:
+
+            print(
+                "\n⚡ Local Context Resolver:"
+            )
+
+            print(
+                "→ Resolved Query:",
+                contextual_query
+            )
+
+            return contextual_query
+
+    # ========================================================
+    # 2. CURRENT QUERY FIRST
+    #
+    # A complete query with an explicit company should still be
+    # routed directly and must not accidentally use old context.
+    # ========================================================
+
+    direct_route = local_route(
+        user_query
+    )
 
     if direct_route:
 
@@ -1028,11 +1262,12 @@ def resolve_query(user_query):
         return user_query
 
     # ========================================================
-    # 2. LOCAL CONTEXT ONLY FOR TRUE FOLLOW-UPS
+    # 3. LOCAL CONTEXT FALLBACK
     # ========================================================
 
     contextual_query = local_context_resolution(
-        user_query
+        user_query,
+        session_id
     )
 
     if contextual_query:
@@ -1049,7 +1284,7 @@ def resolve_query(user_query):
         return contextual_query
 
     # ========================================================
-    # 3. LLM CONTEXT FALLBACK
+    # 4. LLM CONTEXT FALLBACK
     # ========================================================
 
     print(
@@ -1057,7 +1292,8 @@ def resolve_query(user_query):
     )
 
     return contextualize_query(
-        user_query
+        user_query,
+        session_id
     )
 
 
@@ -1320,24 +1556,73 @@ def print_agent_result(result):
 def save_conversation(
     user_query,
     resolved_query,
-    agent
+    agent,
+    session_id="default"
 ):
+    """
+    Persist real user sessions in PostgreSQL while keeping a
+    small in-memory copy for compatibility and fallback.
+    """
 
-    conversation_history.append(
+    history = session_memories.setdefault(
+        session_id,
+        []
+    )
+
+    history.append(
         f"User: {user_query}"
     )
 
-    conversation_history.append(
+    history.append(
         f"Resolved: {resolved_query}"
     )
 
-    conversation_history.append(
+    history.append(
         f"Agent: {agent}"
     )
 
-    if len(conversation_history) > 15:
+    if len(history) > MAX_HISTORY_ENTRIES:
 
-        del conversation_history[:-15]
+        del history[:-MAX_HISTORY_ENTRIES]
+
+    # Persist browser sessions in PostgreSQL.
+    if session_id != "default":
+
+        try:
+
+            db_save_conversation(
+                session_id=session_id,
+                user_query=user_query,
+                resolved_query=resolved_query,
+                agent=agent
+            )
+
+        except Exception as exc:
+
+            print(
+                "\n⚠️ PostgreSQL conversation save failed:"
+            )
+
+            print(exc)
+
+            print(
+                "→ Conversation retained in memory."
+            )
+
+    # Prevent unbounded growth of in-memory sessions.
+    if len(session_memories) > MAX_SESSIONS:
+
+        oldest_session = next(
+            iter(session_memories)
+        )
+
+        if oldest_session != session_id:
+
+            session_memories.pop(
+                oldest_session,
+                None
+            )
+
 
 
 # ============================================================
@@ -1377,7 +1662,10 @@ def deterministic_synthesis(
 # ORCHESTRATE
 # ============================================================
 
-async def orchestrate(user_query):
+async def orchestrate(
+    user_query,
+    session_id="default"
+):
 
     trace = ExecutionTrace(user_query)
 
@@ -1385,7 +1673,10 @@ async def orchestrate(user_query):
     # RESOLVE QUERY
     # ========================================================
 
-    resolved_query = resolve_query(user_query)
+    resolved_query = resolve_query(
+        user_query,
+        session_id
+    )
 
     print(
         "\nResolved Query:",
@@ -1412,8 +1703,67 @@ async def orchestrate(user_query):
     save_conversation(
         user_query,
         resolved_query,
-        agent
+        agent,
+        session_id
     )
+
+    # ========================================================
+    # WEATHER
+    # ========================================================
+
+    if agent == "WEATHER":
+
+        print(
+            "→ Routing to Weather Agent"
+        )
+
+        result = await weather_agent(
+            resolved_query
+        )
+
+        result = validate_agent_result(
+            result,
+            "weather_agent"
+        )
+
+        _record_agent_trace(
+            trace,
+            result,
+            "weather_agent"
+        )
+
+        print_agent_result(
+            result
+        )
+
+        if result["status"] == "success":
+
+            print(
+                "\nFinal Answer:"
+            )
+
+            print(
+                result["answer"]
+            )
+
+        else:
+
+            print(
+                "\n⚠️ Weather Agent failed."
+            )
+
+        report = trace.finish(
+            result["status"],
+            result.get("answer")
+        )
+
+        trace.print_report(
+            report
+        )
+
+        result["execution_trace"] = report
+
+        return result
 
     # ========================================================
     # SALARY
@@ -1465,6 +1815,8 @@ async def orchestrate(user_query):
             result.get("answer")
         )
         trace.print_report(report)
+
+        result["execution_trace"] = report
 
         return result
 
@@ -1518,6 +1870,8 @@ async def orchestrate(user_query):
             result.get("answer")
         )
         trace.print_report(report)
+
+        result["execution_trace"] = report
 
         return result
 
@@ -1663,7 +2017,8 @@ async def orchestrate(user_query):
                 "agents": [
                     salary_result,
                     company_result
-                ]
+                ],
+                "execution_trace": report
             }
 
         # ----------------------------------------------------
@@ -1775,7 +2130,8 @@ async def orchestrate(user_query):
             "agents": [
                 salary_result,
                 company_result
-            ]
+            ],
+            "execution_trace": report
         }
 
     # ========================================================
@@ -1796,7 +2152,8 @@ async def orchestrate(user_query):
     return {
         "status": "error",
         "answer": None,
-        "agents": []
+        "agents": [],
+        "execution_trace": report
     }
 
 
