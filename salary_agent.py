@@ -29,6 +29,21 @@ llm = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY")
 )
 
+def get_request_llm(api_key=None):
+    """
+    Return the OpenRouter client for this request.
+
+    Without a user key, keep the existing project-level key.
+    With a user key, use that key only for this request.
+    """
+    if api_key and api_key.strip():
+        return OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key.strip()
+        )
+
+    return llm
+
 
 # ============================================================
 # MCP SERVER
@@ -1154,7 +1169,7 @@ async def direct_salary_comparison(
 # SALARY AGENT
 # ============================================================
 
-async def salary_agent(user_query):
+async def salary_agent(user_query, api_key=None):
 
     harness = AgentHarness(
         agent_name="salary_agent",
@@ -1162,6 +1177,8 @@ async def salary_agent(user_query):
     )
 
     harness.start()
+
+    request_llm = get_request_llm(api_key)
 
     try:
 
@@ -1421,7 +1438,7 @@ async def salary_agent(user_query):
                     try:
 
                         response = (
-                            llm.chat.completions.create(
+                            request_llm.chat.completions.create(
                                 model="openai/gpt-oss-20b:free",
                                 max_tokens=500,
                                 messages=messages,

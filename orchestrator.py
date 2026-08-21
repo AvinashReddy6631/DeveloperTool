@@ -9,6 +9,7 @@ from openai import OpenAI
 from salary_agent import salary_agent
 from company_agent import company_agent
 from weather_agent import weather_agent
+from general_agent import general_agent
 from synthesizer import synthesize
 
 from database import (
@@ -364,6 +365,28 @@ llm = OpenAI(
 )
 
 
+def get_request_llm(api_key=None):
+    """
+    Return the OpenRouter client for the current request.
+
+    When no personal key is supplied, the existing application
+    key is used. When a personal key is supplied, it is used only
+    for this request and is never persisted or printed.
+    """
+    if api_key:
+        return OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+
+    return llm
+
+
+# Request-scoped error information used when the LLM router fails.
+# This is intentionally kept in-process and is never persisted.
+_last_router_error = None
+
+
 # ============================================================
 # ORCHESTRATOR PROMPT
 # ============================================================
@@ -403,6 +426,13 @@ WEATHER
 - Wind
 - Weather conditions
 
+GENERAL
+- General knowledge questions
+- Programming and coding questions
+- AI and machine learning explanations
+- Study and interview questions
+- General informational questions that do not require Salary, Company, or Weather data
+
 BOTH
 Use BOTH when the user requests salary information AND
 company/employee information in the same request.
@@ -430,6 +460,8 @@ WEATHER
 Return ONLY:
 SALARY
 COMPANY
+WEATHER
+GENERAL
 BOTH
 """
 
@@ -980,6 +1012,12 @@ def local_route(user_query):
 
         return "COMPANY"
 
+    # ========================================================
+    # GENERAL
+    # ========================================================
+    # Keep local_route() backward-compatible with the existing
+    # tests. Generic questions are resolved in choose_agent()
+    # after the legacy deterministic routes are checked.
     return None
 
 
@@ -1072,7 +1110,7 @@ def fallback_agent(user_query):
     if has_company:
         return "COMPANY"
 
-    return None
+    return "GENERAL"
 
 
 # ============================================================
@@ -1081,7 +1119,8 @@ def fallback_agent(user_query):
 
 def contextualize_query(
     user_query,
-    session_id="default"
+    session_id="default",
+    api_key=None,
 ):
 
     # Never rewrite a complete current query.
@@ -1130,7 +1169,9 @@ Rules:
 
     try:
 
-        response = llm.chat.completions.create(
+        request_llm = get_request_llm(api_key)
+
+        response = request_llm.chat.completions.create(
 
             model="openai/gpt-oss-20b:free",
 
@@ -1181,7 +1222,8 @@ Rules:
 
 def resolve_query(
     user_query,
-    session_id="default"
+    session_id="default",
+    api_key=None,
 ):
 
     query = user_query.lower().strip()
@@ -1293,7 +1335,49 @@ def resolve_query(
 
     return contextualize_query(
         user_query,
-        session_id
+        session_id,
+        api_key=api_key,
+    )
+
+
+# ============================================================
+# GENERAL QUERY DETECTION
+# ============================================================
+
+def is_general_query(user_query):
+    """
+    Identify ordinary/general questions only after the existing
+    deterministic Salary, Company, and Weather routes are checked.
+    """
+
+    query = str(user_query or "").strip().lower()
+
+    if not query:
+        return False
+
+    general_patterns = [
+        "hello",
+        "hi",
+        "hey",
+        "explain ",
+        "what is ",
+        "what are ",
+        "why ",
+        "how ",
+        "who is ",
+        "can you ",
+        "help me ",
+        "tell me how ",
+        "difference between ",
+        "define ",
+        "describe ",
+        "give me an example",
+        "teach me ",
+    ]
+
+    return any(
+        pattern in query
+        for pattern in general_patterns
     )
 
 
@@ -1301,7 +1385,14 @@ def resolve_query(
 # CHOOSE AGENT
 # ============================================================
 
-def choose_agent(user_query):
+def choose_agent(
+    user_query,
+    api_key=None,
+):
+    global _last_router_error
+
+    # Clear any previous request's router error.
+    _last_router_error = None
 
     # ========================================================
     # LOCAL ROUTER
@@ -1321,6 +1412,20 @@ def choose_agent(user_query):
         return local_decision
 
     # ========================================================
+    # GENERAL
+    # ========================================================
+    # Route ordinary questions directly to the General Agent.
+    # This keeps general chat independent of the LLM router.
+    if is_general_query(user_query):
+
+        print(
+            "\n⚡ Local Router Decision:",
+            "GENERAL"
+        )
+
+        return "GENERAL"
+
+    # ========================================================
     # LLM ORCHESTRATOR
     # ========================================================
 
@@ -1334,7 +1439,9 @@ def choose_agent(user_query):
 
     try:
 
-        response = llm.chat.completions.create(
+        request_llm = get_request_llm(api_key)
+
+        response = request_llm.chat.completions.create(
 
             model="openai/gpt-oss-20b:free",
 
@@ -1354,6 +1461,8 @@ def choose_agent(user_query):
 
     except Exception as e:
 
+        _last_router_error = str(e)
+
         print(
             "\n⚠️ Orchestrator LLM error:"
         )
@@ -1364,9 +1473,18 @@ def choose_agent(user_query):
             "\n→ Using keyword fallback..."
         )
 
-        return fallback_agent(
+        fallback_decision = fallback_agent(
             user_query
         )
+
+        # If deterministic routing can handle the request,
+        # preserve the existing behavior. Otherwise return None
+        # and let orchestrate() expose the real LLM error instead
+        # of silently converting it into an UNKNOWN route.
+        if fallback_decision:
+            return fallback_decision
+
+        return None
 
     if not response.choices:
 
@@ -1396,6 +1514,12 @@ def choose_agent(user_query):
 
             if "COMPANY" in reasoning:
                 return "COMPANY"
+
+            if "WEATHER" in reasoning:
+                return "WEATHER"
+
+            if "GENERAL" in reasoning:
+                return "GENERAL"
 
         return fallback_agent(
             user_query
@@ -1428,6 +1552,12 @@ def choose_agent(user_query):
     if decision == "COMPANY":
         return "COMPANY"
 
+    if decision == "WEATHER":
+        return "WEATHER"
+
+    if decision == "GENERAL":
+        return "GENERAL"
+
     if "BOTH" in decision:
         return "BOTH"
 
@@ -1436,6 +1566,12 @@ def choose_agent(user_query):
 
     if "COMPANY" in decision:
         return "COMPANY"
+
+    if "WEATHER" in decision:
+        return "WEATHER"
+
+    if "GENERAL" in decision:
+        return "GENERAL"
 
     return fallback_agent(
         user_query
@@ -1664,7 +1800,8 @@ def deterministic_synthesis(
 
 async def orchestrate(
     user_query,
-    session_id="default"
+    session_id="default",
+    api_key=None,
 ):
 
     trace = ExecutionTrace(user_query)
@@ -1675,7 +1812,8 @@ async def orchestrate(
 
     resolved_query = resolve_query(
         user_query,
-        session_id
+        session_id,
+        api_key=api_key,
     )
 
     print(
@@ -1687,9 +1825,36 @@ async def orchestrate(
     # CHOOSE AGENT
     # ========================================================
 
-    agent = choose_agent(resolved_query)
+    agent = choose_agent(
+        resolved_query,
+        api_key=api_key,
+    )
 
     trace.set_orchestrator(agent)
+
+    # If the request could not be routed because the LLM failed,
+    # preserve the real error instead of returning a misleading
+    # generic UNKNOWN/orchestrator error.
+    if agent is None and _last_router_error:
+
+        report = trace.finish(
+            "error",
+            None,
+        )
+
+        trace.print_report(
+            report
+        )
+
+        return {
+            "status": "error",
+            "answer": None,
+            "agents": [],
+            "error": (
+                f"LLM error: {_last_router_error}"
+            ),
+            "execution_trace": report,
+        }
 
     print(
         "\nOrchestrator Decision:",
@@ -1706,6 +1871,65 @@ async def orchestrate(
         agent,
         session_id
     )
+
+    # ========================================================
+    # GENERAL
+    # ========================================================
+
+    if agent == "GENERAL":
+
+        print(
+            "→ Routing to General Agent"
+        )
+
+        result = await general_agent(
+            resolved_query,
+            api_key=api_key
+        )
+
+        result = validate_agent_result(
+            result,
+            "general_agent"
+        )
+
+        _record_agent_trace(
+            trace,
+            result,
+            "general_agent"
+        )
+
+        print_agent_result(
+            result
+        )
+
+        if result["status"] == "success":
+
+            print(
+                "\nFinal Answer:"
+            )
+
+            print(
+                result["answer"]
+            )
+
+        else:
+
+            print(
+                "\n⚠️ General Agent failed."
+            )
+
+        report = trace.finish(
+            result["status"],
+            result.get("answer")
+        )
+
+        trace.print_report(
+            report
+        )
+
+        result["execution_trace"] = report
+
+        return result
 
     # ========================================================
     # WEATHER
@@ -1776,7 +2000,8 @@ async def orchestrate(
         )
 
         result = await salary_agent(
-            resolved_query
+            resolved_query,
+            api_key=api_key
         )
 
         result = validate_agent_result(
@@ -1831,7 +2056,8 @@ async def orchestrate(
         )
 
         result = await company_agent(
-            resolved_query
+            resolved_query,
+            api_key=api_key
         )
 
         result = validate_agent_result(
@@ -1932,11 +2158,13 @@ async def orchestrate(
             await asyncio.gather(
 
                 salary_agent(
-                    salary_query
+                    salary_query,
+                    api_key=api_key
                 ),
 
                 company_agent(
-                    company_query
+                    company_query,
+                    api_key=api_key
                 )
             )
         )

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./App.css";
@@ -7,6 +7,19 @@ import "./App.css";
   const API_URL = import.meta.env.VITE_API_URL;
 
 const SESSION_STORAGE_KEY = "mcp_orchestrator_session_id";
+const OPENROUTER_KEY_PATTERN = /^sk-or-[A-Za-z0-9_-]{8,}$/;
+
+function isQuotaOrRateLimitError(message) {
+  const normalizedMessage = String(message || "").toLowerCase();
+
+  return (
+    normalizedMessage.includes("429") ||
+    normalizedMessage.includes("rate limit") ||
+    normalizedMessage.includes("free-models-per-day") ||
+    normalizedMessage.includes("request limit") ||
+    normalizedMessage.includes("quota")
+  );
+}
 
 function getOrCreateSessionId() {
   try {
@@ -51,13 +64,76 @@ function App() {
   const [greeting, setGreeting] = useState("");
   const [sessionId] = useState(getOrCreateSessionId);
 
+  // BYOK / AI access state.
+  // The personal API key is intentionally kept only in React memory.
+  // It is never written to localStorage/sessionStorage.
+  const [showAiAccess, setShowAiAccess] = useState(false);
+  const [personalApiKey, setPersonalApiKey] = useState("");
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [apiKeyError, setApiKeyError] = useState("");
+  const queryInputRef = useRef(null);
+  const isPersonalApiKeyConnected = Boolean(personalApiKey);
+
+  const [currentView, setCurrentView] = useState(() => {
+    const hash = window.location.hash;
+    if (hash === "#api") return "api";
+    if (hash === "#documentation") return "docs";
+    return "home";
+  });
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setGreeting("Hello! I'm your MCP Orchestrator.");
     }, 700);
 
-    return () => clearTimeout(timer);
+    const onHashChange = () => {
+      const hash = window.location.hash;
+      if (hash === "#api") setCurrentView("api");
+      else if (hash === "#documentation") setCurrentView("docs");
+      else setCurrentView("home");
+    };
+
+    window.addEventListener("hashchange", onHashChange);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("hashchange", onHashChange);
+    };
   }, []);
+
+  const connectPersonalApiKey = () => {
+    const cleanKey = apiKeyInput.trim();
+
+    if (!cleanKey) {
+      setApiKeyError("Enter your OpenRouter API key to connect.");
+      return;
+    }
+
+    if (!OPENROUTER_KEY_PATTERN.test(cleanKey)) {
+      setApiKeyError(
+        "Enter a valid OpenRouter API key. Keys normally start with sk-or-."
+      );
+      return;
+    }
+
+    setPersonalApiKey(cleanKey);
+    setApiKeyInput("");
+    setApiKeyError("");
+
+    // Connected: close the setup dialog and return the user
+    // directly to the main chat box.
+    setShowAiAccess(false);
+
+    window.requestAnimationFrame(() => {
+      queryInputRef.current?.focus();
+    });
+  };
+
+  const disconnectPersonalApiKey = () => {
+    setPersonalApiKey("");
+    setApiKeyInput("");
+    setApiKeyError("");
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -72,12 +148,16 @@ function App() {
     setError("");
     setResponse(null);
     setRobotState("thinking");
+    const usingPersonalApiKey = Boolean(personalApiKey);
 
     try {
       const result = await fetch(`${API_URL}/query`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(usingPersonalApiKey
+            ? { "X-OpenRouter-Key": personalApiKey }
+            : {}),
         },
         body: JSON.stringify({
           query: cleanQuery,
@@ -85,43 +165,47 @@ function App() {
         }),
       });
 
+      const data = await result.json().catch(() => null);
+      const backendError =
+        typeof data?.error === "string" ? data.error : "";
+
       if (!result.ok) {
         throw new Error(
-          `Backend returned HTTP ${result.status}`
+          backendError || `Backend returned HTTP ${result.status}`
         );
       }
 
-      const data = await result.json();
-
-      if (data.status !== "success") {
-  const backendError = data.error || "";
-
-  const isRateLimit =
-    backendError.includes("429") ||
-    backendError.toLowerCase().includes("rate limit") ||
-    backendError.toLowerCase().includes("free-models-per-day") ||
-    backendError.toLowerCase().includes("request limit");
-
-  if (isRateLimit) {
-    throw new Error(
-      "AI request limit reached. The free AI model limit has been reached for today. Your MCP system is working correctly. Please try again after the limit resets."
-    );
-  }
-
-  throw new Error(
-    backendError || "The MCP agent could not process the request."
-  );
-}
+      if (data?.status !== "success") {
+        throw new Error(
+          backendError ||
+            "The MCP Orchestrator could not process the request."
+        );
+      }
 
       setResponse(data);
       setRobotState("success");
     } catch (err) {
-      console.error("MCP request failed:", err);
+      const errorMessage = String(
+        err?.message || ""
+      );
 
-      setError(
-  err.message ||
-    "Unable to connect to the MCP Orchestrator."
-);
+      const isRateLimitError = isQuotaOrRateLimitError(errorMessage);
+
+      if (isRateLimitError) {
+        setError(
+          usingPersonalApiKey
+            ? "Your OpenRouter API key has reached its current AI usage limit. Please try again after the provider limit resets or connect another key."
+            : "AI request limit completed for today. " +
+              "Your MCP Orchestrator is working correctly, " +
+              "but the free AI model quota has been reached. " +
+              "Please try again after the daily limit resets."
+        );
+      } else {
+        setError(
+          errorMessage ||
+            "Unable to connect to the MCP Orchestrator."
+        );
+      }
 
       setRobotState("error");
     } finally {
@@ -159,9 +243,11 @@ function App() {
 
         <div className="brand">
 
-          <div className="brand-logo">
-            MCP
-          </div>
+          <img
+            className="brand-logo"
+            src="/mcp-orchestration-logo.jpeg"
+            alt="MCP Orchestration"
+          />
 
           <div className="brand-text">
             <strong>MCP Orchestrator</strong>
@@ -171,22 +257,172 @@ function App() {
         </div>
 
         <nav className="nav-links">
-          <a href="#home">Home</a>
-          <a href="#agents">Agents</a>
-          <a href="#api">API</a>
-          <a href="#documentation">Docs</a>
+          <a
+            className={currentView === "home" ? "active" : ""}
+            href="#home"
+          >
+            Home
+          </a>
+
+          <a
+            href="#agents"
+            onClick={() => {
+              setCurrentView("home");
+              setTimeout(() => {
+                document.getElementById("agents")?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                });
+              }, 0);
+            }}
+          >
+            Agents
+          </a>
+
+          <a
+            className={currentView === "api" ? "active" : ""}
+            href="#api"
+          >
+            API
+          </a>
+
+          <a
+            className={currentView === "docs" ? "active" : ""}
+            href="#documentation"
+          >
+            Docs
+          </a>
         </nav>
 
-        <div className="online-status">
-          <span />
-          Online
+        <div className="navbar-actions">
+          <button
+            type="button"
+            className={`ai-access-button ${
+              isPersonalApiKeyConnected ? "connected" : ""
+            }`}
+            onClick={() => {
+              setShowAiAccess(true);
+              setApiKeyError("");
+            }}
+          >
+            <span className="ai-access-dot" />
+            AI Access
+            {isPersonalApiKeyConnected && (
+              <span className="ai-access-check">✓</span>
+            )}
+          </button>
+
+          <div className="online-status">
+            <span />
+            Online
+          </div>
         </div>
 
       </header>
 
+      {showAiAccess && (
+        <div
+          className="ai-access-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowAiAccess(false);
+          }}
+        >
+          <div
+            className="ai-access-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-access-title"
+          >
+            <div className="ai-access-modal-header">
+              <div>
+                <div className="ai-access-kicker">AI ACCESS</div>
+                <h2 id="ai-access-title">AI Access</h2>
+                <p>
+                  Connect your own OpenRouter API key for this page session.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="ai-access-close"
+                aria-label="Close AI access dialog"
+                onClick={() => setShowAiAccess(false)}
+              >
+                ×
+              </button>
+            </div>
 
-      {/* Main */}
-      <main className="main" id="home">
+            <div className="ai-mode-card selected">
+              {isPersonalApiKeyConnected ? (
+                <>
+                  <div className="ai-mode-topline">
+                    <span className="ai-mode-badge byok">BYOK</span>
+                    <span className="ai-mode-selected">✓ CONNECTED</span>
+                  </div>
+                  <h3>✓ Connected</h3>
+                  <p>
+                    Your OpenRouter key is active for all questions in this
+                    page session.
+                  </p>
+                  <div className="ai-access-actions">
+                    <button
+                      type="button"
+                      className="ai-disconnect-button"
+                      onClick={disconnectPersonalApiKey}
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3>Use your own OpenRouter API key</h3>
+                  <label className="ai-key-label" htmlFor="openrouter-key">
+                    OPENROUTER API KEY
+                  </label>
+                  <div className="ai-key-input-wrap">
+                    <input
+                      id="openrouter-key"
+                      type="password"
+                      value={apiKeyInput}
+                      onChange={(event) => {
+                        setApiKeyInput(event.target.value);
+                        setApiKeyError("");
+                      }}
+                      placeholder="Paste your API key here"
+                      autoComplete="off"
+                      spellCheck="false"
+                    />
+                  </div>
+                  <div className="ai-access-actions">
+                    <button
+                      type="button"
+                      className="ai-connect-button"
+                      onClick={connectPersonalApiKey}
+                    >
+                      Connect
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="ai-access-security">
+              <span className="security-icon">✓</span>
+              <div>
+                <strong>Session-only key handling</strong>
+                <span>Your key is kept only in React memory.</span>
+              </div>
+            </div>
+
+            {apiKeyError && (
+              <div className="ai-access-message error">{apiKeyError}</div>
+            )}
+          </div>
+        </div>
+      )}
+
+        <main className="main" id="home">
 
         {/* Badge */}
         <div className="hero-badge">
@@ -339,6 +575,7 @@ function App() {
             </div>
 
             <input
+              ref={queryInputRef}
               type="text"
               value={query}
               onChange={(event) =>
@@ -369,7 +606,20 @@ function App() {
 
 
           <div className="query-hint">
-            MCP Engine · Salary Agent · Company Agent
+            <span>MCP Engine</span>
+            <span>Salary Agent</span>
+            <span>Company Agent</span>
+            <span>Weather Agent</span>
+            <span>General Agent</span>
+            {isPersonalApiKeyConnected ? (
+              <span className="ai-key-status active">
+                ✓ Using your OpenRouter key
+              </span>
+            ) : (
+              <span className="ai-key-status">
+                Demo AI access
+              </span>
+            )}
           </div>
 
 
@@ -405,6 +655,16 @@ function App() {
                 }
               >
                 Available roles
+              </button>
+
+              <button
+                onClick={() =>
+                  handleSuggestion(
+                    "What is the weather in Hyderabad?"
+                  )
+                }
+              >
+                Weather
               </button>
 
             </div>
@@ -757,8 +1017,299 @@ function App() {
 
               </div>
 
+      {currentView === "api" && (
+        <main className="docs-page main" id="api">
+          <section className="docs-hero">
+            <div className="hero-badge">
+              <span>✦</span>
+              MCP Orchestrator API
+            </div>
+            <h1>Build with the orchestrator.</h1>
+            <p>
+              Send natural-language requests to the MCP Orchestrator and
+              receive specialized-agent answers together with a detailed
+              execution trace.
+            </p>
+          </section>
 
-              {/* Footer */}
+          <section className="docs-layout">
+            <aside className="docs-sidebar">
+              <a href="#api">Overview</a>
+              <a href="#api-query">POST /query</a>
+              <a href="#api-health">GET /health</a>
+              <a href="#api-response">Response</a>
+              <a href="#api-errors">Errors</a>
+            </aside>
+
+            <div className="docs-content">
+              <section className="doc-section" id="api-query">
+                <div className="doc-kicker">QUERY ENDPOINT</div>
+                <div className="endpoint-card">
+                  <span className="method-badge post">POST</span>
+                  <code>/query</code>
+                </div>
+                <p>
+                  Routes a user request to Salary, Company, Weather, or
+                  multiple specialized agents.
+                </p>
+
+                <h3>Request body</h3>
+                <pre className="code-block"><code>{`{
+  "query": "What is the weather in Hyderabad?",
+  "session_id": "session-123"
+}`}</code></pre>
+
+                <h3>cURL</h3>
+                <pre className="code-block"><code>{`curl -X POST \\
+  "$VITE_API_URL/query" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "query": "What is the weather in Hyderabad?",
+    "session_id": "session-123"
+  }'`}</code></pre>
+              </section>
+
+              <section className="doc-section" id="api-health">
+                <div className="doc-kicker">HEALTH CHECK</div>
+                <div className="endpoint-card">
+                  <span className="method-badge get">GET</span>
+                  <code>/health</code>
+                </div>
+                <p>
+                  Verifies that the FastAPI service is running and the
+                  database connection is available.
+                </p>
+                <pre className="code-block"><code>{`{
+  "status": "healthy",
+  "service": "MCP Agent Orchestrator",
+  "database": "connected"
+}`}</code></pre>
+              </section>
+
+              <section className="doc-section" id="api-response">
+                <div className="doc-kicker">RESPONSE SHAPE</div>
+                <pre className="code-block"><code>{`{
+  "request_id": "uuid",
+  "status": "success",
+  "answer": "Generated answer...",
+  "execution_time": 1.24,
+  "error": null,
+  "execution_trace": {
+    "orchestrator": "WEATHER",
+    "agents": ["weather_agent"],
+    "mcp_calls": [],
+    "final_status": "success"
+  }
+}`}</code></pre>
+
+                <div className="api-field-grid">
+                  <div>
+                    <strong>request_id</strong>
+                    <span>Unique request identifier.</span>
+                  </div>
+                  <div>
+                    <strong>status</strong>
+                    <span>Success or error state.</span>
+                  </div>
+                  <div>
+                    <strong>answer</strong>
+                    <span>Final generated response.</span>
+                  </div>
+                  <div>
+                    <strong>execution_trace</strong>
+                    <span>Routing, agents, tools, and timings.</span>
+                  </div>
+                </div>
+              </section>
+
+              <section className="doc-section" id="api-errors">
+                <div className="doc-kicker">ERRORS</div>
+                <div className="status-grid">
+                  <div>
+                    <span>400</span>
+                    <p>Invalid or empty request.</p>
+                  </div>
+                  <div>
+                    <span>500</span>
+                    <p>Unexpected backend failure.</p>
+                  </div>
+                  <div>
+                    <span>429</span>
+                    <p>Upstream AI rate limit.</p>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+        </main>
+      )}
+
+
+      {currentView === "docs" && (
+        <main className="docs-page main" id="documentation">
+          <section className="docs-hero">
+            <div className="hero-badge">
+              <span>✦</span>
+              Developer Documentation
+            </div>
+            <h1>How the MCP system works.</h1>
+            <p>
+              Understand the architecture, specialized agents, persistent
+              session memory, and request lifecycle behind the project.
+            </p>
+          </section>
+
+          <section className="architecture-panel">
+            <div className="architecture-flow">
+              <div className="flow-node primary"><span>01</span>React UI</div>
+              <div className="flow-arrow">→</div>
+              <div className="flow-node"><span>02</span>FastAPI</div>
+              <div className="flow-arrow">→</div>
+              <div className="flow-node"><span>03</span>MCP Orchestrator</div>
+              <div className="flow-arrow">→</div>
+              <div className="flow-node"><span>04</span>Specialized Agents</div>
+            </div>
+            <div className="architecture-subflow">
+              <span>PostgreSQL memory</span>
+              <span>•</span>
+              <span>MCP tool execution</span>
+              <span>•</span>
+              <span>Execution trace</span>
+            </div>
+          </section>
+
+          <section className="docs-layout">
+            <aside className="docs-sidebar">
+              <a href="#documentation">Overview</a>
+              <a href="#architecture">Architecture</a>
+              <a href="#agents-docs">Agents</a>
+              <a href="#sessions">Sessions</a>
+              <a href="#flow">Request Flow</a>
+            </aside>
+
+            <div className="docs-content">
+              <section className="doc-section" id="architecture">
+                <div className="doc-kicker">ARCHITECTURE</div>
+                <h2>One interface, multiple specialized agents.</h2>
+                <p>
+                  The frontend sends a natural-language request to FastAPI.
+                  The orchestrator resolves context, chooses the route,
+                  invokes specialized agents, and returns the answer plus
+                  observability data.
+                </p>
+
+                <div className="docs-card-grid">
+                  <div>
+                    <strong>MCP Engine</strong>
+                    <span>Routes and coordinates execution.</span>
+                  </div>
+                  <div>
+                    <strong>Salary Agent</strong>
+                    <span>Compensation and salary analysis.</span>
+                  </div>
+                  <div>
+                    <strong>Company Agent</strong>
+                    <span>Companies, employees, and roles.</span>
+                  </div>
+                  <div>
+                    <strong>Weather Agent</strong>
+                    <span>Location resolution and live weather.</span>
+                  </div>
+                </div>
+              </section>
+
+              <section className="doc-section" id="agents-docs">
+                <div className="doc-kicker">SPECIALIZED AGENTS</div>
+                <h2>Current capabilities</h2>
+
+                <div className="agent-doc-list">
+                  <div>
+                    <span className="agent-doc-icon">$</span>
+                    <div>
+                      <strong>Salary Agent</strong>
+                      <p>
+                        Salary statistics, highest-paid employees,
+                        comparisons, and compensation analysis.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="agent-doc-icon">◈</span>
+                    <div>
+                      <strong>Company Agent</strong>
+                      <p>
+                        Company analysis, employees, workforce,
+                        and available roles.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="agent-doc-icon">☁</span>
+                    <div>
+                      <strong>Weather Agent</strong>
+                      <p>
+                        Current weather, humidity, temperature, wind,
+                        and geocoded location resolution.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="doc-section" id="sessions">
+                <div className="doc-kicker">SESSION MEMORY</div>
+                <h2>Context that survives backend restarts.</h2>
+                <p>
+                  Each conversation has a session ID. Conversation turns are
+                  persisted in PostgreSQL so follow-ups can use earlier context
+                  even after the backend restarts.
+                </p>
+
+                <pre className="code-block"><code>{`session_id
+    ↓
+PostgreSQL conversations
+    ↓
+recent context
+    ↓
+follow-up resolver
+    ↓
+specialized agent`}</code></pre>
+              </section>
+
+              <section className="doc-section" id="flow">
+                <div className="doc-kicker">REQUEST FLOW</div>
+                <h2>From question to traceable answer.</h2>
+
+                <ol className="flow-list">
+                  <li>
+                    <strong>Receive</strong>
+                    <span>FastAPI validates the request and creates a request ID.</span>
+                  </li>
+                  <li>
+                    <strong>Resolve</strong>
+                    <span>The orchestrator checks routing and conversation context.</span>
+                  </li>
+                  <li>
+                    <strong>Route</strong>
+                    <span>A specialized agent is selected.</span>
+                  </li>
+                  <li>
+                    <strong>Execute</strong>
+                    <span>The agent runs its MCP tools and services.</span>
+                  </li>
+                  <li>
+                    <strong>Trace</strong>
+                    <span>The answer includes agents, tools, and timing.</span>
+                  </li>
+                </ol>
+              </section>
+            </div>
+          </section>
+        </main>
+      )}
+      {/* Footer */}
               <div className="response-footer">
 
                 <div className="execution-info">
@@ -857,6 +1408,28 @@ function App() {
             <p>
               Analyzes companies, employees and
               available roles.
+            </p>
+
+          </div>
+
+
+          <div className="agent-feature-card">
+
+            <span className="agent-status">
+              ● READY
+            </span>
+
+            <div className="feature-icon weather-feature-icon">
+              ☁
+            </div>
+
+            <h3>
+              Weather Agent
+            </h3>
+
+            <p>
+              Resolves locations and retrieves
+              current weather data.
             </p>
 
           </div>

@@ -24,10 +24,27 @@ load_dotenv()
 # OPENROUTER
 # ============================================================
 
-llm = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY")
-)
+def get_request_llm(api_key=None):
+    """Return an OpenRouter client for this request.
+
+    When api_key is provided, it is used only for the current
+    request. Otherwise the project-level OPENROUTER_API_KEY is used.
+    """
+    selected_key = api_key or os.getenv("OPENROUTER_API_KEY")
+
+    if not selected_key:
+        raise RuntimeError(
+            "No OpenRouter API key is configured."
+        )
+
+    return OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=selected_key
+    )
+
+
+# Backward-compatible default client for existing code/tests.
+llm = get_request_llm()
 
 
 # ============================================================
@@ -770,7 +787,8 @@ async def direct_company_roles(
 # ============================================================
 
 async def company_agent(
-    user_query
+    user_query,
+    api_key=None
 ):
 
     harness = AgentHarness(
@@ -780,6 +798,8 @@ async def company_agent(
     )
 
     harness.start()
+
+    request_llm = get_request_llm(api_key)
 
     try:
 
@@ -1016,7 +1036,7 @@ async def company_agent(
                     try:
 
                         response = (
-                            llm.chat.completions.create(
+                            request_llm.chat.completions.create(
                                 model="openai/gpt-oss-20b:free",
                                 max_tokens=500,
                                 messages=messages,

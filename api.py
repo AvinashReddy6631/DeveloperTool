@@ -1,7 +1,7 @@
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -184,7 +184,8 @@ async def global_exception_handler(
     response_model=QueryResponse
 )
 async def query_agent(
-    request: QueryRequest
+    request: QueryRequest,
+    http_request: Request
 ):
 
     start_time = time.perf_counter()
@@ -200,6 +201,17 @@ async def query_agent(
         if request.session_id
         else "default"
     )
+
+    # Optional BYOK support:
+    # If the frontend sends X-OpenRouter-Key, the orchestrator
+    # can use that key for this request. If omitted, existing
+    # behavior continues using the server-configured key.
+    user_openrouter_key = http_request.headers.get("X-OpenRouter-Key")
+    
+    if user_openrouter_key:
+        print("BYOK RECEIVED: YES")
+    else:
+        print("BYOK RECEIVED: NO")
 
     # --------------------------------------------------------
     # EMPTY QUERY
@@ -249,7 +261,8 @@ async def query_agent(
 
         result = await orchestrate(
             query,
-            session_id
+            session_id,
+            api_key=user_openrouter_key
         )
 
         # ----------------------------------------------------
