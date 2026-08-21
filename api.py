@@ -3,11 +3,10 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from database import get_connection
 
+from database import get_connection
 from orchestrator import orchestrate
 from config import APP_HOST, APP_PORT
 
@@ -24,6 +23,12 @@ app = FastAPI(
     ),
     version="1.1.0"
 )
+
+
+# ============================================================
+# CORS CONFIGURATION
+# ============================================================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -35,6 +40,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ============================================================
 # REQUEST MODEL
@@ -121,9 +127,7 @@ async def global_exception_handler(
     exc: Exception
 ):
 
-    request_id = str(
-        uuid.uuid4()
-    )
+    request_id = str(uuid.uuid4())
 
     print()
     print("=" * 60)
@@ -173,9 +177,7 @@ async def query_agent(
 
     start_time = time.perf_counter()
 
-    request_id = str(
-        uuid.uuid4()
-    )
+    request_id = str(uuid.uuid4())
 
     query = request.query.strip()
 
@@ -220,17 +222,14 @@ async def query_agent(
         # ORCHESTRATOR
         # ----------------------------------------------------
 
-        result = await orchestrate(
-            query
-        )
+        result = await orchestrate(query)
 
         # ----------------------------------------------------
         # EXECUTION TIME
         # ----------------------------------------------------
 
         execution_time = round(
-            time.perf_counter()
-            - start_time,
+            time.perf_counter() - start_time,
             3
         )
 
@@ -238,21 +237,13 @@ async def query_agent(
         # INVALID RESULT
         # ----------------------------------------------------
 
-        if not isinstance(
-            result,
-            dict
-        ):
+        if not isinstance(result, dict):
 
             return QueryResponse(
-
                 request_id=request_id,
-
                 status="error",
-
                 answer=None,
-
                 execution_time=execution_time,
-
                 error=(
                     "Orchestrator returned "
                     "an invalid result."
@@ -295,11 +286,6 @@ async def query_agent(
                 )
 
         # ----------------------------------------------------
-        # API ANSWER DEBUG
-        # ----------------------------------------------------
-
-      
-        # ----------------------------------------------------
         # RESPONSE LOG
         # ----------------------------------------------------
 
@@ -329,25 +315,63 @@ async def query_agent(
         # ----------------------------------------------------
 
         return QueryResponse(
-
             request_id=request_id,
-
             status=status,
-
             answer=answer,
-
             execution_time=execution_time,
-
             error=error
         )
 
     except Exception as exc:
 
         execution_time = round(
-            time.perf_counter()
-            - start_time,
+            time.perf_counter() - start_time,
             3
         )
+
+        # ----------------------------------------------------
+        # ORIGINAL ERROR
+        # ----------------------------------------------------
+
+        error_message = str(exc)
+
+        # ----------------------------------------------------
+        # FRIENDLY ERROR HANDLING
+        # ----------------------------------------------------
+
+        if (
+            "429" in error_message
+            or "Rate limit exceeded" in error_message
+            or "free-models-per-day" in error_message
+        ):
+
+            error_message = (
+                "The AI service has reached its current "
+                "request limit. The MCP system is working "
+                "correctly. Please try again later."
+            )
+
+        elif (
+            "401" in error_message
+            or "Invalid API key" in error_message
+            or "authentication" in error_message.lower()
+        ):
+
+            error_message = (
+                "The AI service authentication failed. "
+                "Please check the API configuration."
+            )
+
+        elif "timeout" in error_message.lower():
+
+            error_message = (
+                "The AI service took too long to respond. "
+                "Please try again."
+            )
+
+        # ----------------------------------------------------
+        # FAILURE LOG
+        # ----------------------------------------------------
 
         print()
         print("=" * 60)
@@ -360,8 +384,13 @@ async def query_agent(
         )
 
         print(
-            "Error:",
+            "Original Error:",
             str(exc)
+        )
+
+        print(
+            "User Error:",
+            error_message
         )
 
         print(
@@ -371,17 +400,16 @@ async def query_agent(
 
         print("=" * 60)
 
+        # ----------------------------------------------------
+        # FRIENDLY ERROR RESPONSE
+        # ----------------------------------------------------
+
         return QueryResponse(
-
             request_id=request_id,
-
             status="error",
-
             answer=None,
-
             execution_time=execution_time,
-
-            error=str(exc)
+            error=error_message
         )
 
 
