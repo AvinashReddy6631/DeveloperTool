@@ -82,22 +82,35 @@ def assert_coordinate_weather_request(calls, latitude, longitude):
     assert "q" not in weather_params
 
 
-def test_hyderabad_weather_uses_geocoding_then_coordinates(monkeypatch):
+def test_telangana_hyderabad_prefers_city_over_generic_state(monkeypatch):
     calls = mock_openweather(
         monkeypatch,
-        [indian_candidate("Hyderabad", 17.385, 78.4867, "Telangana")]
+        [
+            indian_candidate(
+                "Telangana NGOs Colony",
+                17.4,
+                78.5,
+                "Telangana"
+            ),
+            indian_candidate(
+                "Hyderabad",
+                17.385,
+                78.4867,
+                "Telangana"
+            ),
+        ]
     )
 
     result = run_async(
         weather_agent.weather_agent(
-            "What is the weather in   hyderabad!!!"
+            "weather at telangana,hyderabad"
         )
     )
 
     assert result["status"] == "success"
     assert "**Weather in Hyderabad, Telangana, India**" in result["answer"]
     assert_coordinate_weather_request(calls, 17.385, 78.4867)
-    assert parse_qs(urlparse(calls[0]).query)["q"] == ["hyderabad"]
+    assert parse_qs(urlparse(calls[0]).query)["q"] == ["telangana, hyderabad"]
 
 
 def test_indian_small_town_is_resolved(monkeypatch):
@@ -156,25 +169,38 @@ def test_misspelled_city_uses_geocoder_candidate(monkeypatch):
     )
 
     assert result["status"] == "success"
-    assert "Location resolved from **Hyderbad** to **Hyderabad**." in result["answer"]
+    assert (
+        "Location resolved from **Hyderbad** to "
+        "**Hyderabad, Telangana, India**."
+        in result["answer"]
+    )
     assert_coordinate_weather_request(calls, 17.385, 78.4867)
 
 
-def test_misspelled_small_town_uses_geocoder_candidate(monkeypatch):
+def test_misspelled_chennai_prefers_indian_candidate(monkeypatch):
     calls = mock_openweather(
         monkeypatch,
-        [indian_candidate("Warangal", 17.9689, 79.5941, "Telangana")]
+        [
+            {
+                "name": "Anhui",
+                "lat": 31.0,
+                "lon": 117.0,
+                "state": "Anhui",
+                "country": "CN",
+            },
+            indian_candidate("Chennai", 13.0827, 80.2707, "Tamil Nadu"),
+        ]
     )
 
     result = run_async(
         weather_agent.weather_agent(
-            "What is the weather in Warngal?"
+            "weather at chenni"
         )
     )
 
     assert result["status"] == "success"
-    assert "Location resolved from **Warngal** to **Warangal**." in result["answer"]
-    assert_coordinate_weather_request(calls, 17.9689, 79.5941)
+    assert "Chennai, Tamil Nadu, India" in result["answer"]
+    assert_coordinate_weather_request(calls, 13.0827, 80.2707)
 
 
 def test_unknown_location_returns_resolution_guidance(monkeypatch):
@@ -212,55 +238,81 @@ def test_equally_strong_locations_request_clarification(monkeypatch):
     assert len(calls) == 1
 
 
-def test_temperature_query_uses_shared_location_resolution(monkeypatch):
+def test_telangana_tarnaka_prefers_area_over_generic_state(monkeypatch):
     calls = mock_openweather(
         monkeypatch,
-        [indian_candidate("Nalgonda", 17.0575, 79.2684, "Telangana")]
+        [
+            indian_candidate(
+                "Telangana NGOs Colony",
+                17.4,
+                78.5,
+                "Telangana"
+            ),
+            indian_candidate("Tarnaka", 17.4239, 78.5383, "Telangana"),
+        ]
     )
 
     result = run_async(
         weather_agent.weather_agent(
-            "What is the temperature in Nalgonda?"
+            "temperature in Telangana, Tarnaka"
         )
     )
 
     assert result["status"] == "success"
-    assert "**Temperature:** 28.5°C" in result["answer"]
-    assert_coordinate_weather_request(calls, 17.0575, 79.2684)
+    assert "Tarnaka, Telangana, India" in result["answer"]
+    assert_coordinate_weather_request(calls, 17.4239, 78.5383)
 
 
-def test_humidity_query_uses_shared_location_resolution(monkeypatch):
+def test_explicit_uk_location_overrides_india_default(monkeypatch):
     calls = mock_openweather(
         monkeypatch,
-        [indian_candidate("Warangal", 17.9689, 79.5941, "Telangana")]
+        [
+            indian_candidate("London", 28.0, 77.0, "Delhi"),
+            {
+                "name": "London",
+                "lat": 51.5072,
+                "lon": -0.1276,
+                "state": "England",
+                "country": "GB",
+            },
+        ]
     )
 
     result = run_async(
         weather_agent.weather_agent(
-            "What is the humidity in Warangal?"
+            "weather in London, UK"
         )
     )
 
     assert result["status"] == "success"
-    assert "**Humidity:** 72%" in result["answer"]
-    assert_coordinate_weather_request(calls, 17.9689, 79.5941)
+    assert "London, England, GB" in result["answer"]
+    assert_coordinate_weather_request(calls, 51.5072, -0.1276)
 
 
-def test_wind_query_uses_shared_location_resolution(monkeypatch):
+def test_explicit_canada_location_overrides_india_default(monkeypatch):
     calls = mock_openweather(
         monkeypatch,
-        [indian_candidate("Secunderabad", 17.4399, 78.4983, "Telangana")]
+        [
+            indian_candidate("London", 28.0, 77.0, "Delhi"),
+            {
+                "name": "London",
+                "lat": 42.9849,
+                "lon": -81.2453,
+                "state": "Ontario",
+                "country": "CA",
+            },
+        ]
     )
 
     result = run_async(
         weather_agent.weather_agent(
-            "What is the wind in Secunderabd?"
+            "weather in London, Canada"
         )
     )
 
     assert result["status"] == "success"
-    assert "**Wind speed:** 4.2 m/s" in result["answer"]
-    assert_coordinate_weather_request(calls, 17.4399, 78.4983)
+    assert "London, Ontario, CA" in result["answer"]
+    assert_coordinate_weather_request(calls, 42.9849, -81.2453)
 
 
 def test_rain_conditions_query_uses_shared_location_resolution(monkeypatch):

@@ -18,6 +18,19 @@ OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 GEOCODING_URL = "https://api.openweathermap.org/geo/1.0/direct"
 CURRENT_WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
 
+COUNTRY_ALIASES = {
+    "india": "IN",
+    "in": "IN",
+    "uk": "GB",
+    "unitedkingdom": "GB",
+    "greatbritain": "GB",
+    "canada": "CA",
+    "france": "FR",
+    "usa": "US",
+    "us": "US",
+    "unitedstates": "US",
+}
+
 
 # ============================================================
 # LOCATION EXTRACTION
@@ -244,8 +257,82 @@ def candidate_names(candidate: dict) -> list[str]:
     return names
 
 
-def score_location_candidate(location: str, candidate: dict):
-    """Score a geocoder candidate without inventing a location match."""
+def parse_location_context(location: str):
+    """Split comma-separated location context without assuming city order."""
+
+    parts = [
+        normalize_location_text(part)
+        for part in location.split(",")
+    ]
+
+    parts = [
+        part
+        for part in parts
+        if part
+    ]
+
+    country_code = None
+
+    if parts:
+        country_code = COUNTRY_ALIASES.get(
+            location_key(parts[-1])
+        )
+
+        if country_code:
+            parts = parts[:-1]
+
+    return {
+        "parts": parts,
+        "country_code": country_code,
+    }
+
+
+def name_match_score(location_part: str, candidate_key: str):
+    """Score exact, near-exact, and typo-tolerant location names."""
+
+    location_part_key = location_key(location_part)
+
+    if not location_part_key or not candidate_key:
+        return 0.0
+
+    if location_part_key == candidate_key:
+        return 100.0
+
+    if (
+        candidate_key.startswith(location_part_key)
+        or location_part_key.startswith(candidate_key)
+    ):
+        return 90.0
+
+    return (
+        difflib.SequenceMatcher(
+            None,
+            location_part_key,
+            candidate_key
+        ).ratio()
+        * 100
+    )
+
+
+def state_matches_location_part(state: str, location_part: str):
+    """Check whether a candidate state matches one user-supplied part."""
+
+    state_key = location_key(state)
+    location_part_key = location_key(location_part)
+
+    return bool(
+        state_key
+        and location_part_key
+        and (
+            state_key == location_part_key
+            or state_key in location_part_key
+            or location_part_key in state_key
+        )
+    )
+
+
+def score_location_candidate(location_context: dict, candidate: dict):
+    """Score candidates after country filtering and context extraction."""
 
     if (
         candidate.get("lat") is None
@@ -253,13 +340,9 @@ def score_location_candidate(location: str, candidate: dict):
     ):
         return None
 
-    primary_location = normalize_location_text(
-        location.split(",", 1)[0]
-    )
+    location_parts = location_context["parts"]
 
-    primary_key = location_key(primary_location)
-
-    if not primary_key:
+    if not location_parts:
         return None
 
     candidate_keys = [
@@ -276,39 +359,39 @@ def score_location_candidate(location: str, candidate: dict):
     if not candidate_keys:
         return None
 
-    if primary_key in candidate_keys:
-        score = 100.0
-
-    elif any(
-        key.startswith(primary_key)
-        or primary_key.startswith(key)
-        for key in candidate_keys
-    ):
-        score = 90.0
-
-    else:
-        score = max(
-            difflib.SequenceMatcher(
-                None,
-                primary_key,
-                candidate_key
-            ).ratio()
-            * 100
+    name_scores = [
+        max(
+            name_match_score(location_part, candidate_key)
             for candidate_key in candidate_keys
         )
+        for location_part in location_parts
+    ]
 
-    location_context = location_key(location)
+    best_name_score = max(name_scores)
 
     state = candidate.get("state")
 
-    if state and location_key(str(state)) in location_context:
-        score += 15
+    state_match_indexes = {
+        index
+        for index, location_part in enumerate(location_parts)
+        if state
+        and state_matches_location_part(
+            str(state),
+            location_part
+        )
+    }
 
-    if (
-        candidate.get("country") == "IN"
-        and "india" in location_context
-    ):
-        score += 20
+    score = best_name_score
+
+    if state_match_indexes:
+        score += 30
+
+    if any(
+        name_score >= 72
+        and index not in state_match_indexes
+        for index, name_score in enumerate(name_scores)
+    ) and state_match_indexes:
+        score += 80
 
     return score
 
@@ -319,19 +402,69 @@ def select_best_location_candidate(
 ):
     """Return a confident candidate or a resolution error type."""
 
-    scored_candidates = []
+    location_context = parse_location_context(location)
 
-    for candidate in candidates:
-        score = score_location_candidate(
-            location,
+    candidates_with_coordinates = [
+        candidate
+        for candidate in candidates
+        if (
+            candidate.get("lat") is not None
+            and candidate.get("lon") is not None
+        )
+    ]
+
+    explicit_country = location_context["country_code"]
+
+    if explicit_country:
+        scoped_candidates = [
             candidate
+            for candidate in candidates_with_coordinates
+            if candidate.get("country") == explicit_country
+        ]
+
+        if not scoped_candidates:
+            return None, "unresolved"
+
+    else:
+        indian_candidates = [
+            candidate
+            for candidate in candidates_with_coordinates
+            if candidate.get("country") == "IN"
+        ]
+
+        scoped_candidates = (
+            indian_candidates
+            if indian_candidates
+            else candidates_with_coordinates
         )
 
-        if score is not None and score >= 72:
-            scored_candidates.append((score, candidate))
+    def score_candidates(candidates_to_score):
+        return [
+            (score, candidate)
+            for candidate in candidates_to_score
+            for score in [
+                score_location_candidate(
+                    location_context,
+                    candidate
+                )
+            ]
+            if score is not None and score >= 72
+        ]
+
+    scored_candidates = score_candidates(scoped_candidates)
 
     if not scored_candidates:
-        return None, "unresolved"
+        if (
+            not explicit_country
+            and scoped_candidates != candidates_with_coordinates
+        ):
+            scored_candidates = score_candidates(
+                candidates_with_coordinates
+            )
+
+        if not scored_candidates:
+            return None, "unresolved"
+
 
     scored_candidates.sort(
         key=lambda item: item[0],
@@ -347,18 +480,6 @@ def select_best_location_candidate(
     ]
 
     if len(equally_strong) > 1:
-        india_candidates = [
-            candidate
-            for candidate in equally_strong
-            if candidate.get("country") == "IN"
-        ]
-
-        if (
-            "india" in location_key(location)
-            and len(india_candidates) == 1
-        ):
-            return india_candidates[0], None
-
         return None, "ambiguous"
 
     return scored_candidates[0][1], None
@@ -660,7 +781,7 @@ async def weather_agent(query: str):
                 f"\n\n"
                 f"Location resolved from "
                 f"**{location}** to "
-                f"**{resolved_name}**."
+                f"**{display_location}**."
             )
 
         answer = (
