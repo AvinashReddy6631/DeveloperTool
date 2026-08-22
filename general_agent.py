@@ -149,7 +149,7 @@ async def general_agent(user_query, api_key=None):
             try:
                 response = (
                     request_llm.chat.completions.create(
-                        model="openai/gpt-oss-20b:free",
+                        model="openrouter/free",
                         max_tokens=700,
                         messages=messages
                     )

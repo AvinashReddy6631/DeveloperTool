@@ -1439,7 +1439,7 @@ async def salary_agent(user_query, api_key=None):
 
                         response = (
                             request_llm.chat.completions.create(
-                                model="openai/gpt-oss-20b:free",
+                                model="openrouter/free",
                                 max_tokens=500,
                                 messages=messages,
                                 tools=openrouter_tools,

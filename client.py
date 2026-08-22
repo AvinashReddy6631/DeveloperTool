@@ -179,7 +179,7 @@ async def main():
                     try:
 
                         response = llm.chat.completions.create(
-                        model="openai/gpt-oss-20b:free",
+                        model="openrouter/free",
                         max_tokens=500,
                         messages=messages,
                         tools=openrouter_tools,

@@ -10,7 +10,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="openai/gpt-oss-20b:free",
+    model="openrouter/free",
     max_tokens=1000,
     messages=[
         {

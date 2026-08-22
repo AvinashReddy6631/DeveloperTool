@@ -1173,7 +1173,7 @@ Rules:
 
         response = request_llm.chat.completions.create(
 
-            model="openai/gpt-oss-20b:free",
+            model="openrouter/free",
 
             max_tokens=150,
 
@@ -1443,7 +1443,7 @@ def choose_agent(
 
         response = request_llm.chat.completions.create(
 
-            model="openai/gpt-oss-20b:free",
+            model="openrouter/free",
 
             max_tokens=100,
 
@@ -2296,6 +2296,16 @@ async def orchestrate(
                     salary_answer,
                     company_answer
                 )
+
+                if final_answer and any(
+                    safety_field in final_answer
+                    for safety_field in (
+                        "User Safety:",
+                        "Response Safety:",
+                        "Safety Categories:",
+                    )
+                ):
+                    final_answer = None
 
             except Exception as e:
 
