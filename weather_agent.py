@@ -1,6 +1,8 @@
 import asyncio
+import difflib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -65,17 +67,25 @@ def extract_city(query: str) -> str | None:
         "conditions in ",
         "conditions for ",
         "conditions at ",
+        "current weather in ",
+        "current weather for ",
+        "current weather at ",
+        "is it raining in ",
+        "raining in ",
     ]
 
     for pattern in patterns:
         index = lower_query.find(pattern)
 
         if index != -1:
-            city = query[
+            city = normalize_location_text(query[
                 index + len(pattern):
-            ].strip()
+            ])
 
             if city:
+                if is_generic_location_reference(city):
+                    return None
+
                 return city.rstrip("?.!, ")
 
     # Fallback:
@@ -95,18 +105,69 @@ def extract_city(query: str) -> str | None:
         index = lower_query.find(word)
 
         if index != -1:
-            remainder = query[
+            remainder = normalize_location_text(query[
                 index + len(word):
-            ].strip()
+            ])
 
             remainder = remainder.lstrip(
                 " inat:,-"
             ).strip()
 
-            if remainder:
+            if (
+                remainder
+                and not is_generic_location_reference(remainder)
+            ):
                 return remainder.rstrip("?.!, ")
 
     return None
+
+
+def normalize_location_text(location: str) -> str:
+    """Normalize user-entered location text before geocoding."""
+
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        str(location or "").strip()
+    )
+
+    normalized = re.sub(
+        r"\s*,\s*",
+        ", ",
+        normalized
+    )
+
+    return normalized.strip(" ,.;:!?")
+
+
+def is_generic_location_reference(location: str) -> bool:
+    """Reject location references that need user-provided context."""
+
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        location.casefold().strip()
+    )
+
+    return normalized in {
+        "my village",
+        "my town",
+        "my city",
+        "my area",
+        "my location",
+        "here",
+        "there",
+    }
+
+
+def location_key(location: str) -> str:
+    """Build a comparison key that ignores case and punctuation."""
+
+    return re.sub(
+        r"[^\w]",
+        "",
+        normalize_location_text(location).casefold()
+    )
 
 
 # ============================================================
@@ -138,13 +199,8 @@ async def fetch_json(url: str) -> dict | list:
 # OPENWEATHER GEOCODING
 # ============================================================
 
-async def geocode_location(location: str):
-    """
-    Convert an arbitrary location name into coordinates using
-    OpenWeather's Direct Geocoding API.
-
-    Returns the best matching location dictionary.
-    """
+async def fetch_geocoding_candidates(location: str):
+    """Fetch candidate locations from OpenWeather's Direct Geocoding API."""
 
     params = urllib.parse.urlencode({
         "q": location,
@@ -158,17 +214,173 @@ async def geocode_location(location: str):
 
     data = await fetch_json(url)
 
-    if not isinstance(data, list) or not data:
+    if not isinstance(data, list):
+        return []
+
+    return [
+        candidate
+        for candidate in data
+        if isinstance(candidate, dict)
+    ]
+
+
+def candidate_names(candidate: dict) -> list[str]:
+    """Return the canonical and localized names for one candidate."""
+
+    names = []
+
+    if candidate.get("name"):
+        names.append(str(candidate["name"]))
+
+    local_names = candidate.get("local_names")
+
+    if isinstance(local_names, dict):
+        names.extend(
+            str(name)
+            for name in local_names.values()
+            if name
+        )
+
+    return names
+
+
+def score_location_candidate(location: str, candidate: dict):
+    """Score a geocoder candidate without inventing a location match."""
+
+    if (
+        candidate.get("lat") is None
+        or candidate.get("lon") is None
+    ):
         return None
 
-    # OpenWeather returns the best matches first. Use the
-    # first result and preserve the returned canonical name.
-    best = data[0]
+    primary_location = normalize_location_text(
+        location.split(",", 1)[0]
+    )
 
-    if not isinstance(best, dict):
+    primary_key = location_key(primary_location)
+
+    if not primary_key:
         return None
 
-    return best
+    candidate_keys = [
+        location_key(name)
+        for name in candidate_names(candidate)
+    ]
+
+    candidate_keys = [
+        key
+        for key in candidate_keys
+        if key
+    ]
+
+    if not candidate_keys:
+        return None
+
+    if primary_key in candidate_keys:
+        score = 100.0
+
+    elif any(
+        key.startswith(primary_key)
+        or primary_key.startswith(key)
+        for key in candidate_keys
+    ):
+        score = 90.0
+
+    else:
+        score = max(
+            difflib.SequenceMatcher(
+                None,
+                primary_key,
+                candidate_key
+            ).ratio()
+            * 100
+            for candidate_key in candidate_keys
+        )
+
+    location_context = location_key(location)
+
+    state = candidate.get("state")
+
+    if state and location_key(str(state)) in location_context:
+        score += 15
+
+    if (
+        candidate.get("country") == "IN"
+        and "india" in location_context
+    ):
+        score += 20
+
+    return score
+
+
+def select_best_location_candidate(
+    location: str,
+    candidates: list[dict]
+):
+    """Return a confident candidate or a resolution error type."""
+
+    scored_candidates = []
+
+    for candidate in candidates:
+        score = score_location_candidate(
+            location,
+            candidate
+        )
+
+        if score is not None and score >= 72:
+            scored_candidates.append((score, candidate))
+
+    if not scored_candidates:
+        return None, "unresolved"
+
+    scored_candidates.sort(
+        key=lambda item: item[0],
+        reverse=True
+    )
+
+    top_score = scored_candidates[0][0]
+
+    equally_strong = [
+        candidate
+        for score, candidate in scored_candidates
+        if top_score - score <= 2
+    ]
+
+    if len(equally_strong) > 1:
+        india_candidates = [
+            candidate
+            for candidate in equally_strong
+            if candidate.get("country") == "IN"
+        ]
+
+        if (
+            "india" in location_key(location)
+            and len(india_candidates) == 1
+        ):
+            return india_candidates[0], None
+
+        return None, "ambiguous"
+
+    return scored_candidates[0][1], None
+
+
+async def resolve_location(location: str):
+    """Geocode normalized location text and select a safe best match."""
+
+    candidates = await fetch_geocoding_candidates(location)
+
+    return select_best_location_candidate(
+        location,
+        candidates
+    )
+
+
+async def geocode_location(location: str):
+    """Return the best candidate for existing direct geocoding callers."""
+
+    candidate, _ = await resolve_location(location)
+
+    return candidate
 
 
 # ============================================================
@@ -244,6 +456,8 @@ async def weather_agent(query: str):
             ),
         }
 
+    location = normalize_location_text(location)
+
     mcp_calls = []
 
     try:
@@ -254,7 +468,7 @@ async def weather_agent(query: str):
 
         geocode_start = time.perf_counter()
 
-        resolved = await geocode_location(
+        resolved, resolution_error = await resolve_location(
             location
         )
 
@@ -268,11 +482,7 @@ async def weather_agent(query: str):
             "arguments": {
                 "location": location
             },
-            "status": (
-                "success"
-                if resolved
-                else "error"
-            ),
+            "status": "success" if resolved else "error",
             "execution_time": geocode_time,
         })
 
@@ -290,9 +500,13 @@ async def weather_agent(query: str):
                 "tool_calls": len(mcp_calls),
                 "execution_time": execution_time,
                 "error": (
-                    f"I could not find a location matching "
-                    f"'{location}'. Please check the spelling "
-                    f"or try a nearby city."
+                    f"Multiple locations match '{location}'. "
+                    "Please add the district, state, or country."
+                    if resolution_error == "ambiguous"
+                    else f"I couldn't confidently locate "
+                    f"'{location}'. Try adding the district or "
+                    f"state, for example '{location}, Telangana, "
+                    "India'."
                 ),
                 "mcp_calls": mcp_calls,
             }
@@ -418,7 +632,9 @@ async def weather_agent(query: str):
 
         if country:
             location_parts.append(
-                str(country)
+                "India"
+                if country == "IN"
+                else str(country)
             )
 
         display_location = ", ".join(

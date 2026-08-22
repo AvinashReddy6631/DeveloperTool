@@ -150,7 +150,7 @@ async def general_agent(user_query, api_key=None):
                 response = (
                     request_llm.chat.completions.create(
                         model="openrouter/free",
-                        max_tokens=700,
+                        max_tokens=500,
                         messages=messages
                     )
                 )

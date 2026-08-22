@@ -155,7 +155,7 @@ Rules:
 
             model="openrouter/free",
 
-            max_tokens=600,
+            max_tokens=500,
 
             messages=[
                 {

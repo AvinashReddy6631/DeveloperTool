@@ -1175,7 +1175,7 @@ Rules:
 
             model="openrouter/free",
 
-            max_tokens=150,
+            max_tokens=100,
 
             messages=[
                 {
@@ -1294,6 +1294,20 @@ def resolve_query(
         print(
             "\n⚡ Local Router:",
             direct_route
+        )
+
+        print(
+            "→ Current query is complete; "
+            "skipping context resolver."
+        )
+
+        return user_query
+
+    if is_general_query(user_query):
+
+        print(
+            "\n⚡ Local Router:",
+            "GENERAL"
         )
 
         print(
@@ -1445,7 +1459,7 @@ def choose_agent(
 
             model="openrouter/free",
 
-            max_tokens=100,
+            max_tokens=50,
 
             messages=[
                 {
