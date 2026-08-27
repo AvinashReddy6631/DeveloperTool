@@ -545,9 +545,9 @@ function App() {
         <main className="main" id="home">
 
         {/* Badge */}
-        <div className="hero-badge">
-          <span>✦</span>
-          Intelligent MCP Multi-Agent System
+          <div className="hero-badge">
+          <span>●</span>
+          DEVELOPER INTELLIGENCE PLATFORM
         </div>
 
 
@@ -690,9 +690,17 @@ function App() {
             onSubmit={handleSubmit}
           >
 
-            <div className="query-icon">
-              ✦
-            </div>
+            <button
+              type="button"
+              className="query-icon github-command-button"
+              aria-label="Open GitHub repository analysis"
+              onClick={() => {
+                document.querySelector(".github-section input")?.focus();
+                document.querySelector(".github-section")?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }}
+            >
+              <span className="github-mark" aria-hidden="true">GH</span>
+            </button>
 
             <input
               ref={queryInputRef}
@@ -701,7 +709,7 @@ function App() {
               onChange={(event) =>
                 setQuery(event.target.value)
               }
-              placeholder="Ask your agents anything or paste a repo..."
+              placeholder="Ask anything or analyze a GitHub repository..."
               disabled={loading}
             />
 

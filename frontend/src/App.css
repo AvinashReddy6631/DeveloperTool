@@ -97,6 +97,10 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 
 button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.github-command-button { display: grid; place-items: center; flex: 0 0 auto; width: 34px; height: 34px; padding: 0; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; color: var(--ink); background: rgba(255,255,255,.06); cursor: pointer; transition: transform .2s, border-color .2s, background .2s; }
+.github-command-button:hover { transform: translateY(-1px); border-color: rgba(255,255,255,.3); background: rgba(255,255,255,.12); }
+.github-mark { font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.08em; }
+.query-box:focus-within .github-command-button { border-color: rgba(88,212,221,.5); background: rgba(88,212,221,.1); }
 @media (max-width: 760px) { .navbar { width: min(calc(100% - 24px), 620px); margin-top: 12px; }.nav-links { display: none; }.navbar-actions { margin-left: auto; }.online-status { display: none; }.main { width: min(calc(100% - 24px), 620px); padding-top: 58px; }.visual-section { gap: 24px; transform: scale(.68); margin: 0 -40px; }.github-input, .query-box { align-items: stretch; flex-direction: column; }.query-box { padding: 13px; }.query-box button, .github-input button { width: 100%; padding: 12px; }.query-hint { flex-direction: column; gap: 5px; }.docs-layout { grid-template-columns: 1fr; }.docs-sidebar { order: -1; }.hero h1 { font-size: clamp(39px, 13vw, 62px); } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; }.background::before, .background::after, .gradient-orb, .scan-line, .robot, .text-cube, .thinking-dots span { animation: none !important; }.query-box button, .analyze-repo-button, .repository-card { transition: none; } }
 @media (max-width: 430px) { .brand-text span { display: none; }.brand-text strong { font-size: 12px; }.ai-access-button { font-size: 0; }.ai-access-button .ai-access-dot, .ai-access-button .ai-access-check { margin: 0; }.main { padding-bottom: 70px; }.github-section, .response-panel { padding: 15px; } }
