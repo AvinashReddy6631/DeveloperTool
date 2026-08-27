@@ -6,24 +6,24 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #070c14;
-  --foreground: #f4f7fb;
-  --card: #101a29;
-  --card-foreground: #f4f7fb;
-  --popover: #101a29;
-  --popover-foreground: #f4f7fb;
-  --primary: #63a9ff;
-  --primary-foreground: #07101b;
-  --secondary: #172638;
-  --secondary-foreground: #dce8f5;
-  --muted: #172131;
-  --muted-foreground: #8e9aab;
-  --accent: #58d4dd;
-  --accent-foreground: #07101b;
-  --destructive: #f07e8c;
-  --border: rgba(183, 201, 224, .14);
-  --input: rgba(183, 201, 224, .18);
-  --ring: #58d4dd;
+  --background: #05070d;
+  --foreground: #f4f8ff;
+  --card: #0b1726;
+  --card-foreground: #f4f8ff;
+  --popover: #0c1a2a;
+  --popover-foreground: #f4f8ff;
+  --primary: #5ee7f2;
+  --primary-foreground: #051018;
+  --secondary: #102236;
+  --secondary-foreground: #dbeaff;
+  --muted: #132238;
+  --muted-foreground: #9aa9bd;
+  --accent: #7ae8db;
+  --accent-foreground: #051018;
+  --destructive: #ff7187;
+  --border: rgba(181, 211, 238, .14);
+  --input: rgba(181, 211, 238, .2);
+  --ring: #5ee7f2;
   --radius: .75rem;
   --font-sans: "Geist Variable", Inter, system-ui, sans-serif;
   --font-heading: "Geist Variable", Inter, system-ui, sans-serif;
@@ -63,11 +63,11 @@ body { min-width: 320px; min-height: 100vh; margin: 0; overflow-x: hidden; color
 h1, h2, h3, h4, h5, h6 { font-family: var(--font-heading); }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
-::selection { color: var(--foreground); background: rgba(99, 169, 255, .3); }
+::selection { color: var(--foreground); background: rgba(94, 231, 242, .28); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--background); }
-::-webkit-scrollbar-thumb { border-radius: 999px; background: #34465b; }
-::-webkit-scrollbar-thumb:hover { background: #526e8e; }
+::-webkit-scrollbar-thumb { border-radius: 999px; background: #30465c; }
+::-webkit-scrollbar-thumb:hover { background: #4e718c; }
 
 @layer base {
   * { @apply border-border outline-ring/50; }
