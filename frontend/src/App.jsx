@@ -370,7 +370,7 @@ function App() {
           />
 
           <div className="brand-text">
-            <strong>MCP Orchestrator</strong>
+            <strong>Developer Intelligence</strong>
             <span>Multi-Agent Intelligence</span>
           </div>
 
