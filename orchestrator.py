@@ -10,6 +10,7 @@ from salary_agent import salary_agent
 from company_agent import company_agent
 from weather_agent import weather_agent
 from general_agent import general_agent
+from developer_agent import developer_agent
 from synthesizer import synthesize
 
 from database import (
@@ -426,12 +427,26 @@ WEATHER
 - Wind
 - Weather conditions
 
+DEVELOPER
+- Programming and coding questions
+- Debugging and code errors
+- FastAPI, Python, JavaScript, React, Node.js, Docker, Git, MCP, RAG, APIs, databases
+- Code review and software engineering questions
+
 GENERAL
 - General knowledge questions
 - Programming and coding questions
 - AI and machine learning explanations
 - Study and interview questions
 - General informational questions that do not require Salary, Company, or Weather data
+
+DEVELOPER ALSO HANDLES:
+- GitHub profile analysis
+- GitHub repository analysis
+- Repository structure and file-tree analysis
+- Source-code review from GitHub repositories
+- README and configuration analysis
+- Architecture, dependencies, tests, CI/CD, and code-quality analysis
 
 BOTH
 Use BOTH when the user requests salary information AND
@@ -461,6 +476,7 @@ Return ONLY:
 SALARY
 COMPANY
 WEATHER
+DEVELOPER
 GENERAL
 BOTH
 """
@@ -794,10 +810,207 @@ def local_context_resolution(
 # ============================================================
 # LOCAL ROUTER
 # ============================================================
+# ============================================================
+# LOCAL ROUTER
+# ============================================================
 
 def local_route(user_query):
 
-    query = user_query.lower().strip()
+    query = str(user_query).lower().strip()
+
+    # ========================================================
+    # GITHUB / DEV-GITHUB REPOSITORY ANALYSIS
+    # IMPORTANT:
+    # A GitHub URL is always a Developer request.
+    # Keep this BEFORE salary/company/general detection so a
+    # repository analysis can never be routed to the database
+    # agents just because the query contains words such as
+    # "company", "analysis", or "employee".
+    # ========================================================
+
+    github_url_patterns = [
+        "https://github.com/",
+        "http://github.com/",
+        "github.com/",
+        "www.github.com/",
+    ]
+
+    github_request_words = [
+        "github",
+        "github repository",
+        "github repo",
+        "repository",
+        "repo",
+        "analyze repository",
+        "analyze repo",
+        "review repository",
+        "review repo",
+        "analyze github",
+        "github profile",
+    ]
+
+    has_github_url = any(
+        pattern in query
+        for pattern in github_url_patterns
+    )
+
+    has_github_request = any(
+        pattern in query
+        for pattern in github_request_words
+    )
+
+    if has_github_url or has_github_request:
+        return "DEVELOPER"
+
+    # ========================================================
+    # DEVELOPER / CODE / AI ENGINEERING
+    #
+    # IMPORTANT:
+    # Developer detection must happen BEFORE GENERAL.
+    # ========================================================
+
+    developer_patterns = [
+
+        # Programming languages
+        "python",
+        "javascript",
+        "typescript",
+        "java ",
+        "c++",
+        "c#",
+        "golang",
+        "go code",
+        "rust",
+
+        # Frameworks / libraries
+        "fastapi",
+        "flask",
+        "django",
+        "react",
+        "next.js",
+        "nextjs",
+        "node.js",
+        "nodejs",
+        "express.js",
+        "express",
+        "spring boot",
+
+        # Development
+        "debug",
+        "debugging",
+        "bug",
+        "error",
+        "exception",
+        "traceback",
+        "stack trace",
+        "syntax error",
+        "runtime error",
+        "compile error",
+        "compilation error",
+        "module not found",
+        "modulenotfounderror",
+        "typeerror",
+        "valueerror",
+        "keyerror",
+        "attributeerror",
+
+        # APIs / backend
+        "api error",
+        "api failing",
+        "api failure",
+        "api not working",
+        "api is not working",
+        "server error",
+        "server not running",
+        "server is not running",
+        "backend error",
+        "backend failing",
+        "http 500",
+        "http 404",
+        "http 401",
+        "http 403",
+        "status code",
+
+        # Databases
+        "postgresql",
+        "postgres",
+        "mysql",
+        "mongodb",
+        "mongo",
+        "database connection",
+        "database error",
+        "database failing",
+        "sql error",
+
+        # DevOps
+        "docker",
+        "dockerfile",
+        "docker compose",
+        "container",
+        "kubernetes",
+        "k8s",
+        "deployment",
+        "deploy",
+        "deployment error",
+        "github actions",
+        "ci/cd",
+        "cicd",
+
+        # Git
+        "git error",
+        "git merge",
+        "git conflict",
+        "git push",
+        "git pull",
+        "github error",
+        "repository error",
+
+        # AI engineering
+        "mcp",
+        "model context protocol",
+        "rag",
+        "retrieval augmented generation",
+        "embedding",
+        "embeddings",
+        "vector database",
+        "vector db",
+        "chromadb",
+        "faiss",
+        "llm",
+        "large language model",
+        "ai agent",
+        "ai agents",
+        "multi agent",
+        "multi-agent",
+        "agentic",
+        "openrouter",
+        "openai api",
+        "prompt engineering",
+        "tool calling",
+        "function calling",
+
+        # Developer actions
+        "write code",
+        "generate code",
+        "fix my code",
+        "fix this code",
+        "review my code",
+        "review this code",
+        "explain this code",
+        "debug this code",
+        "code is not working",
+        "code isn't working",
+        "why is my code",
+        "why does my code",
+        "how do i fix",
+        "how can i fix",
+    ]
+
+    if any(
+        pattern in query
+        for pattern in developer_patterns
+    ):
+        return "DEVELOPER"
 
     # ========================================================
     # BOTH
@@ -809,7 +1022,6 @@ def local_route(user_query):
     has_analysis = (
         "analyze" in query
         or "analysis" in query
-        or "analyze" in query
     )
 
     has_salary = (
@@ -838,10 +1050,12 @@ def local_route(user_query):
     )
 
     if has_analysis and has_salary and has_company:
-
         return "BOTH"
 
-    # Explicit compare + salary + employee/role
+    # ========================================================
+    # COMPARE + SALARY + EMPLOYEE / ROLE
+    # ========================================================
+
     if (
         "compare" in query
         and (
@@ -856,7 +1070,6 @@ def local_route(user_query):
             or "roles" in query
         )
     ):
-
         return "BOTH"
 
     # ========================================================
@@ -876,9 +1089,14 @@ def local_route(user_query):
         pattern in query
         for pattern in informational_patterns
     ):
-        companies_in_query = extract_companies(user_query)
+
+        companies_in_query = extract_companies(
+            user_query
+        )
+
         if companies_in_query:
             return "COMPANY"
+
         if (
             "employee" in query
             or "employees" in query
@@ -887,15 +1105,10 @@ def local_route(user_query):
             or "role" in query
             or "roles" in query
         ):
-
             return "COMPANY"
 
     # ========================================================
     # SIMPLE COMPANY ANALYSIS
-    # "Analyze Google."
-    #
-    # Do this before SALARY so a plain analysis request is
-    # handled deterministically without OpenRouter.
     # ========================================================
 
     if (
@@ -968,7 +1181,6 @@ def local_route(user_query):
         pattern in query
         for pattern in salary_patterns
     ):
-
         return "SALARY"
 
     # ========================================================
@@ -1009,17 +1221,17 @@ def local_route(user_query):
         pattern in query
         for pattern in company_patterns
     ):
-
         return "COMPANY"
 
     # ========================================================
     # GENERAL
     # ========================================================
-    # Keep local_route() backward-compatible with the existing
-    # tests. Generic questions are resolved in choose_agent()
-    # after the legacy deterministic routes are checked.
-    return None
+    #
+    # Keep None here so the existing choose_agent()
+    # fallback remains compatible with your project.
+    # ========================================================
 
+    return None
 
 # ============================================================
 # FALLBACK ROUTER
@@ -1028,6 +1240,23 @@ def local_route(user_query):
 def fallback_agent(user_query):
 
     query = user_query.lower()
+
+    # GitHub repository/profile requests belong to Developer Agent.
+    github_patterns = [
+        "https://github.com/",
+        "http://github.com/",
+        "github.com/",
+        "github repository",
+        "github repo",
+        "github profile",
+        "analyze repository",
+        "analyze repo",
+        "review repository",
+        "review repo",
+    ]
+
+    if any(pattern in query for pattern in github_patterns):
+        return "DEVELOPER"
 
     salary_words = [
         "salary",
@@ -1532,6 +1761,9 @@ def choose_agent(
             if "WEATHER" in reasoning:
                 return "WEATHER"
 
+            if "DEVELOPER" in reasoning:
+                return "DEVELOPER"
+
             if "GENERAL" in reasoning:
                 return "GENERAL"
 
@@ -1569,8 +1801,14 @@ def choose_agent(
     if decision == "WEATHER":
         return "WEATHER"
 
+    if decision == "DEVELOPER":
+        return "DEVELOPER"
+
     if decision == "GENERAL":
         return "GENERAL"
+
+    if "DEVELOPER" in decision:
+        return "DEVELOPER"
 
     if "BOTH" in decision:
         return "BOTH"
@@ -1885,6 +2123,80 @@ async def orchestrate(
         agent,
         session_id
     )
+
+    # ========================================================
+    # DEVELOPER
+    # ========================================================
+
+    if agent == "DEVELOPER":
+
+        print(
+            "→ Routing to Developer Agent"
+        )
+
+        # developer_agent.py is currently a synchronous function,
+        # so DO NOT use await here.
+        try:
+            result = developer_agent(
+                resolved_query,
+                api_key=api_key
+            )
+        except Exception as exc:
+            result = {
+                "agent": "developer_agent",
+                "status": "error",
+                "answer": None,
+                "tool_calls": 0,
+                "execution_time": 0.0,
+                "error": str(exc),
+            }
+
+        # Normalize developer_agent.py output to the same contract
+        # used by the other agents.
+        if isinstance(result, dict):
+            result.setdefault("agent", "developer_agent")
+            result.setdefault("status", "success")
+            result.setdefault("answer", None)
+            result.setdefault("tool_calls", 0)
+            result.setdefault("execution_time", 0.0)
+            result.setdefault("error", None)
+
+        result = validate_agent_result(
+            result,
+            "developer_agent"
+        )
+
+        _record_agent_trace(
+            trace,
+            result,
+            "developer_agent"
+        )
+
+        print_agent_result(
+            result
+        )
+
+        if result["status"] == "success":
+            print("\nFinal Answer:")
+            print(result.get("answer") or "")
+
+        else:
+            print("\n⚠️ Developer Agent failed.")
+            if result.get("error"):
+                print("Error:", result["error"])
+
+        report = trace.finish(
+            result["status"],
+            result.get("answer")
+        )
+
+        trace.print_report(
+            report
+        )
+
+        result["execution_trace"] = report
+
+        return result
 
     # ========================================================
     # GENERAL
@@ -2407,6 +2719,28 @@ async def orchestrate(
         "agents": [],
         "execution_trace": report
     }
+
+
+# ============================================================
+# DEV-GITHUB ROUTING TEST HELPER
+# ============================================================
+
+def is_github_request(user_query):
+    """Return True when the query targets GitHub/profile/repository analysis."""
+    query = str(user_query or "").lower().strip()
+    patterns = (
+        "https://github.com/",
+        "http://github.com/",
+        "github.com/",
+        "github repository",
+        "github repo",
+        "github profile",
+        "analyze repository",
+        "analyze repo",
+        "review repository",
+        "review repo",
+    )
+    return any(pattern in query for pattern in patterns)
 
 
 # ============================================================

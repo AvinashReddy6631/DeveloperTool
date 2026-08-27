@@ -1,5 +1,7 @@
 import time
 import uuid
+import re
+import httpx
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -43,7 +45,7 @@ app.add_middleware(
 
 
 # ============================================================
-# REQUEST MODEL
+# REQUEST MODELS
 # ============================================================
 
 class QueryRequest(BaseModel):
@@ -63,6 +65,22 @@ class QueryRequest(BaseModel):
             "Optional conversation session identifier. "
             "Requests without one use the legacy default session."
         )
+    )
+
+class GitHubProfileRequest(BaseModel):
+
+    profile_url: str = Field(
+        ...,
+        min_length=1,
+        description="GitHub profile URL or username to discover repositories."
+    )
+
+class GitHubRepoOverviewRequest(BaseModel):
+
+    repository_url: str = Field(
+        ...,
+        min_length=1,
+        description="GitHub repository URL to get overview for."
     )
 
 
@@ -126,6 +144,210 @@ async def health():
                 "service": "MCP Agent Orchestrator",
                 "database": "disconnected"
             }
+        )
+
+
+# ============================================================
+# GITHUB REPOSITORY DISCOVERY ENDPOINT
+# ============================================================
+
+@app.post("/github/repositories")
+async def discover_repositories(request: GitHubProfileRequest):
+
+    url_val = request.profile_url.strip()
+    
+    # Extract the username. Allows raw usernames or full https://github.com/username URLs
+    match = re.search(r"(?:github\.com/)?([a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38})/?$", url_val)
+    
+    if not match:
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid GitHub profile URL or username."
+        )
+        
+    username = match.group(1)
+    
+    api_url = f"https://api.github.com/users/{username}/repos?per_page=100&sort=updated"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(api_url, headers=headers, timeout=15.0)
+            
+            # Handle specific GitHub API Errors
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="GitHub user not found.")
+            
+            if response.status_code == 403 and "rate limit" in response.text.lower():
+                raise HTTPException(status_code=429, detail="GitHub API rate limit exceeded. Please try again later.")
+                
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=f"GitHub API failure: {response.status_code}")
+            
+            repos = response.json()
+            
+            if not isinstance(repos, list):
+                raise HTTPException(status_code=502, detail="Invalid response format from GitHub API.")
+            
+            if not repos:
+                return {"status": "success", "repositories": []}
+            
+            # Extract and return only safe, relevant metadata
+            result = []
+            for repo in repos:
+                result.append({
+                    "name": repo.get("name"),
+                    "full_name": repo.get("full_name"),
+                    "url": repo.get("html_url"),
+                    "description": repo.get("description"),
+                    "language": repo.get("language"),
+                    "stars": repo.get("stargazers_count", 0),
+                    "forks": repo.get("forks_count", 0),
+                    "visibility": repo.get("visibility", "public"),
+                    "default_branch": repo.get("default_branch"),
+                    "updated_at": repo.get("updated_at")
+                })
+                
+            return {"status": "success", "repositories": result}
+            
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503, 
+            detail="Network failure while contacting GitHub API."
+        )
+
+
+# ============================================================
+# GITHUB REPOSITORY OVERVIEW ENDPOINT
+# ============================================================
+
+@app.post("/github/repository/overview")
+async def get_repository_overview(request: GitHubRepoOverviewRequest):
+    url_val = request.repository_url.strip()
+    
+    match = re.search(r"github\.com/([^/]+)/([^/?#\s]+)", url_val)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid GitHub repository URL.")
+        
+    owner, repo_name = match.groups()
+    repo_name = repo_name.replace(".git", "")
+    
+    api_base = f"https://api.github.com/repos/{owner}/{repo_name}"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            # 1. Fetch Repo info
+            repo_resp = await client.get(api_base, headers=headers, timeout=15.0)
+            if repo_resp.status_code == 404:
+                raise HTTPException(status_code=404, detail="Repository not found.")
+            if repo_resp.status_code == 403 and "rate limit" in repo_resp.text.lower():
+                raise HTTPException(status_code=429, detail="GitHub API rate limit exceeded.")
+            if repo_resp.status_code != 200:
+                raise HTTPException(status_code=repo_resp.status_code, detail=f"GitHub API failure: {repo_resp.status_code}")
+                
+            repo_data = repo_resp.json()
+            default_branch = repo_data.get("default_branch", "main")
+            
+            # 2. Fetch Languages
+            langs_resp = await client.get(f"{api_base}/languages", headers=headers, timeout=15.0)
+            langs_data = langs_resp.json() if langs_resp.status_code == 200 else {}
+            languages = list(langs_data.keys()) if langs_data else ["Not detected from supplied repository evidence."]
+            
+            # 3. Fetch Tree (Recursive) to detect evidence
+            tree_resp = await client.get(f"{api_base}/git/trees/{default_branch}?recursive=1", headers=headers, timeout=15.0)
+            tree_data = tree_resp.json() if tree_resp.status_code == 200 else {}
+            paths = [item.get("path", "") for item in tree_data.get("tree", [])]
+            
+            # Evidence detection helpers
+            def find_paths(keywords):
+                return [p for p in paths if any(k.lower() in p.lower() for k in keywords)]
+
+            frameworks = []
+            if find_paths(["fastapi"]): frameworks.append("FastAPI")
+            if find_paths(["react", "next"]): frameworks.append("React/Next.js")
+            if find_paths(["flask"]): frameworks.append("Flask")
+            if find_paths(["django"]): frameworks.append("Django")
+            if find_paths(["spring"]): frameworks.append("Spring")
+            if find_paths(["express"]): frameworks.append("Express.js")
+            if find_paths(["vue"]): frameworks.append("Vue.js")
+            if not frameworks: frameworks = ["Not detected from supplied repository evidence."]
+
+            deps = []
+            if find_paths(["requirements.txt"]): deps.append("requirements.txt (Python)")
+            if find_paths(["package.json"]): deps.append("package.json (Node)")
+            if find_paths(["pom.xml"]): deps.append("pom.xml (Java)")
+            if find_paths(["gemfile"]): deps.append("Gemfile (Ruby)")
+            if find_paths(["build.gradle"]): deps.append("build.gradle (Java/Kotlin)")
+            if find_paths(["pyproject.toml"]): deps.append("pyproject.toml (Python)")
+            if not deps: deps = ["Not detected from supplied repository evidence."]
+
+            entry = find_paths(["main.py", "server.py", "app.py", "index.js", "app.jsx", "app.tsx", "manage.py", "run.py"])
+            entry = list(set([p.split('/')[-1] for p in entry]))
+            if not entry: entry = ["Not detected from supplied repository evidence."]
+
+            apis = find_paths(["api.py", "routes", "controllers", "endpoints"])
+            apis = list(set([p.split('/')[-1] for p in apis if p.endswith(('.py', '.js', '.ts', '.java', '.go'))]))
+            if not apis: apis = ["Not detected from supplied repository evidence."]
+
+            mcp = find_paths(["mcp", "orchestrator", "agent"])
+            mcp = list(set([p.split('/')[-1] for p in mcp if p.endswith(('.py', '.js', '.ts', '.jsx', '.tsx'))]))
+            if not mcp: mcp = ["Not detected from supplied repository evidence."]
+
+            config = find_paths(["config.py", ".env", "tsconfig.json", "docker-compose", "settings.py", "vite.config", "webpack.config"])
+            config = list(set([p.split('/')[-1] for p in config]))
+            if not config: config = ["Not detected from supplied repository evidence."]
+
+            testing = find_paths(["test", "spec", "pytest", "jest"])
+            test_summary = ["Testing files/directories detected"] if testing else ["Not detected from supplied repository evidence."]
+
+            deployment = []
+            if find_paths([".github/workflows"]): deployment.append("GitHub Actions")
+            if find_paths(["Dockerfile"]): deployment.append("Docker")
+            if find_paths(["Jenkinsfile"]): deployment.append("Jenkins")
+            if find_paths(["heroku"]): deployment.append("Heroku")
+            if find_paths(["vercel.json"]): deployment.append("Vercel")
+            if not deployment: deployment = ["Not detected from supplied repository evidence."]
+
+            arch_summary = "Standard Repository Structure"
+            has_frontend = find_paths(["frontend", "client", "ui", "web"])
+            has_backend = find_paths(["backend", "api", "server"])
+            
+            if has_frontend and has_backend:
+                arch_summary = "Client-Server / Full-Stack Architecture"
+            elif find_paths(["mcp", "agent", "llm"]):
+                arch_summary = "Agentic / AI Architecture"
+            elif has_frontend and not has_backend:
+                arch_summary = "Frontend Architecture"
+            elif has_backend and not has_frontend:
+                arch_summary = "Backend / API Architecture"
+
+            top_structure = [p for p in paths if '/' not in p][:10]
+            if not top_structure: top_structure = ["Not detected from supplied repository evidence."]
+
+            return {
+                "status": "success",
+                "repository": {
+                    "name": repo_data.get("name"),
+                    "description": repo_data.get("description")
+                },
+                "architecture": {"summary": arch_summary},
+                "structure": top_structure,
+                "languages": languages,
+                "frameworks": frameworks,
+                "dependencies": deps,
+                "entry_points": entry[:10],
+                "apis": apis[:10],
+                "mcp_components": mcp[:10],
+                "configuration": config[:10],
+                "testing": test_summary,
+                "deployment": deployment
+            }
+            
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503, 
+            detail="Network failure while contacting GitHub API."
         )
 
 
@@ -318,8 +540,8 @@ async def query_agent(
             "execution_trace"
         )
         # --------------------------------------------------------
-# FRIENDLY OPENROUTER RATE-LIMIT MESSAGE
-# --------------------------------------------------------
+        # FRIENDLY OPENROUTER RATE-LIMIT MESSAGE
+        # --------------------------------------------------------
 
         if status == "error" and error:
 

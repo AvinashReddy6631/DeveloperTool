@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import "./App.css";
 
 
-  const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL;
 
 const SESSION_STORAGE_KEY = "mcp_orchestrator_session_id";
 const OPENROUTER_KEY_PATTERN = /^sk-or-[A-Za-z0-9_-]{8,}$/;
@@ -63,6 +63,16 @@ function App() {
   const [robotState, setRobotState] = useState("idle");
   const [greeting, setGreeting] = useState("");
   const [sessionId] = useState(getOrCreateSessionId);
+
+  // GitHub Repository Discovery State
+  const [githubProfile, setGithubProfile] = useState("");
+  const [githubRepos, setGithubRepos] = useState([]);
+  const [isFetchingRepos, setIsFetchingRepos] = useState(false);
+  const [githubError, setGithubError] = useState("");
+
+  // GitHub Repository Overview State
+  const [repoOverviews, setRepoOverviews] = useState({});
+  const [fetchingOverviewFor, setFetchingOverviewFor] = useState(null);
 
   // BYOK / AI access state.
   // The personal API key is intentionally kept only in React memory.
@@ -135,10 +145,8 @@ function App() {
     setApiKeyError("");
   };
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-
-    const cleanQuery = query.trim();
+  const executeQuery = async (textToQuery) => {
+    const cleanQuery = textToQuery.trim();
 
     if (!cleanQuery || loading) {
       return;
@@ -166,51 +174,163 @@ function App() {
       });
 
       const data = await result.json().catch(() => null);
-      const backendError =
-        typeof data?.error === "string" ? data.error : "";
 
+      // 1. Handle actual HTTP errors (4xx, 5xx)
       if (!result.ok) {
-        throw new Error(
-          backendError || `Backend returned HTTP ${result.status}`
-        );
+        const backendError = typeof data?.error === "string" ? data.error : `Backend returned HTTP ${result.status}`;
+        throw new Error(backendError);
       }
 
-      if (data?.status !== "success") {
-        throw new Error(
-          backendError ||
-            "The MCP Orchestrator could not process the request."
-        );
+      // 2. Safely reject missing or corrupted JSON
+      if (!data) {
+        throw new Error("Invalid or empty response from the analysis server.");
+      }
+
+      // 3. Handle explicit application-level errors (status="error")
+      if (data.status === "error") {
+        const backendError = typeof data.error === "string" ? data.error : "The MCP Orchestrator could not process the request.";
+        throw new Error(backendError);
+      }
+
+      // 4. Reject unknown statuses but permit "partial" and "success"
+      if (data.status !== "success" && data.status !== "partial") {
+        throw new Error(`Unexpected response status: ${data.status}`);
       }
 
       setResponse(data);
       setRobotState("success");
     } catch (err) {
-      const errorMessage = String(
-        err?.message || ""
-      );
+      const errorMessage = String(err?.message || "");
 
-      const isRateLimitError = isQuotaOrRateLimitError(errorMessage);
-
-      if (isRateLimitError) {
+      // Match OpenRouter budget limit issues
+      if (
+        errorMessage.includes("FATAL_LIMIT_ERROR") ||
+        errorMessage.includes("insufficient") ||
+        errorMessage.includes("token budget")
+      ) {
         setError(
-          usingPersonalApiKey
-            ? "Your OpenRouter API key has reached its current AI usage limit. Please try again after the provider limit resets or connect another key."
-            : "AI request limit completed for today. " +
-              "Your MCP Orchestrator is working correctly, " +
-              "but the free AI model quota has been reached. " +
-              "Please try again after the daily limit resets."
+          "Repository analysis unavailable: OpenRouter credits/token budget are insufficient. Please try again after adding credits."
         );
       } else {
-        setError(
-          errorMessage ||
-            "Unable to connect to the MCP Orchestrator."
-        );
+        const isRateLimitError = isQuotaOrRateLimitError(errorMessage);
+
+        if (isRateLimitError) {
+          setError(
+            usingPersonalApiKey
+              ? "Your OpenRouter API key has reached its current AI usage limit. Please try again after the provider limit resets or connect another key."
+              : "AI request limit completed for today. " +
+                "Your MCP Orchestrator is working correctly, " +
+                "but the free AI model quota has been reached. " +
+                "Please try again after the daily limit resets."
+          );
+        } else if (
+          errorMessage === "Failed to fetch" ||
+          errorMessage.includes("NetworkError") ||
+          errorMessage.includes("Network request failed")
+        ) {
+          setError(
+            "Unable to connect to the analysis server. Please make sure the backend is running and try again."
+          );
+        } else {
+          setError(
+            errorMessage ||
+              "Unable to connect to the analysis server. Please make sure the backend is running and try again."
+          );
+        }
       }
 
       setRobotState("error");
     } finally {
+      // Guaranteed to always stop loading UI regardless of error or success
       setLoading(false);
     }
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    executeQuery(query);
+  };
+
+  const handleLoadRepos = async (event) => {
+    event.preventDefault();
+    const cleanUrl = githubProfile.trim();
+    if (!cleanUrl || isFetchingRepos) return;
+
+    setIsFetchingRepos(true);
+    setGithubError("");
+    setGithubRepos([]);
+
+    try {
+      const result = await fetch(`${API_URL}/github/repositories`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_url: cleanUrl }),
+      });
+      
+      const data = await result.json().catch(() => null);
+      
+      if (!result.ok) {
+        throw new Error(data?.detail || `GitHub API error: ${result.status}`);
+      }
+      
+      if (data?.status === "success") {
+        setGithubRepos(data.repositories || []);
+      } else {
+        throw new Error("Failed to load repositories.");
+      }
+    } catch (err) {
+      setGithubError(err.message || "Failed to fetch GitHub repositories.");
+    } finally {
+      setIsFetchingRepos(false);
+    }
+  };
+
+  const handleViewOverview = async (repoUrl, repoFullName) => {
+    if (repoOverviews[repoFullName] && !repoOverviews[repoFullName].error) {
+      setRepoOverviews(prev => ({
+         ...prev,
+         [repoFullName]: { ...prev[repoFullName], isHidden: !prev[repoFullName].isHidden }
+      }));
+      return;
+    }
+
+    setFetchingOverviewFor(repoFullName);
+    try {
+      const result = await fetch(`${API_URL}/github/repository/overview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repository_url: repoUrl }),
+      });
+
+      const data = await result.json().catch(() => null);
+
+      if (!result.ok) {
+        throw new Error(data?.detail || `Overview fetch failed: ${result.status}`);
+      }
+
+      if (data?.status === "success") {
+        setRepoOverviews(prev => ({
+          ...prev,
+          [repoFullName]: { ...data, isHidden: false }
+        }));
+      } else {
+         throw new Error("Failed to load overview.");
+      }
+    } catch (err) {
+      setRepoOverviews(prev => ({
+        ...prev,
+        [repoFullName]: { error: err.message || "Failed to load.", isHidden: false }
+      }));
+    } finally {
+      setFetchingOverviewFor(null);
+    }
+  };
+
+  const handleAnalyzeRepo = (repoUrl) => {
+    const analysisQuery = `Analyze ${repoUrl}. Find real issues, explain the architecture, and analyze the repository based only on supplied repository evidence.`;
+    setQuery(analysisQuery);
+    executeQuery(analysisQuery);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const handleNewQuestion = () => {
@@ -560,7 +680,7 @@ function App() {
         </div>
 
 
-        {/* Query */}
+        {/* Query Section (Includes Discovery UI) */}
         <section className="query-section">
 
           <form
@@ -581,7 +701,7 @@ function App() {
               onChange={(event) =>
                 setQuery(event.target.value)
               }
-              placeholder="Ask your agents anything..."
+              placeholder="Ask your agents anything or paste a repo..."
               disabled={loading}
             />
 
@@ -667,6 +787,84 @@ function App() {
                 Weather
               </button>
 
+            </div>
+          )}
+
+          {/* GitHub Repository Discovery */}
+          {!response && !loading && !error && (
+            <div className="github-section">
+              <div className="github-header">
+                <span>✦</span> GitHub Repository Analysis
+              </div>
+              <form className="github-input" onSubmit={handleLoadRepos}>
+                <input 
+                  type="text" 
+                  placeholder="https://github.com/username" 
+                  value={githubProfile} 
+                  onChange={(e) => setGithubProfile(e.target.value)} 
+                  disabled={isFetchingRepos || loading}
+                />
+                <button type="submit" disabled={!githubProfile.trim() || isFetchingRepos || loading}>
+                  {isFetchingRepos ? "Loading..." : "Load Repositories"}
+                </button>
+              </form>
+              
+              {githubError && <div className="github-error">{githubError}</div>}
+              
+              {githubRepos.length > 0 && (
+                <div className="github-repositories">
+                  {githubRepos.map(repo => (
+                    <div key={repo.full_name} className="repository-card">
+                      <div className="repository-info">
+                        <h4>{repo.name} <span style={{fontSize:"0.8rem", fontWeight:"normal", marginLeft:"8px", color:"#6b7280"}}>{repo.visibility}</span></h4>
+                        <p>{repo.description || "No description provided."}</p>
+                      </div>
+                      <div className="repository-meta">
+                        {repo.language && <span>{repo.language}</span>}
+                        <span>⭐ {repo.stars}</span>
+                        <span>Forks: {repo.forks}</span>
+                      </div>
+                      
+                      <div className="repo-actions">
+                        <button
+                          onClick={() => handleViewOverview(repo.url, repo.full_name)}
+                          className="overview-repo-button"
+                          disabled={fetchingOverviewFor === repo.full_name}
+                        >
+                          {fetchingOverviewFor === repo.full_name ? "Loading..." : "View Overview"}
+                        </button>
+                        <button onClick={() => handleAnalyzeRepo(repo.url)} className="analyze-repo-button" style={{flex: 1, marginTop: 0}}>
+                          Analyze Repository
+                        </button>
+                      </div>
+
+                      {repoOverviews[repo.full_name] && !repoOverviews[repo.full_name].isHidden && (
+                        <div className="repository-overview">
+                          {repoOverviews[repo.full_name].error ? (
+                            <div className="github-error" style={{marginBottom: 0}}>{repoOverviews[repo.full_name].error}</div>
+                          ) : (
+                            <>
+                              <h5>Repository Overview</h5>
+                              <div className="overview-item"><strong>Architecture:</strong> {repoOverviews[repo.full_name].architecture?.summary}</div>
+                              <div className="overview-item"><strong>Structure:</strong> {repoOverviews[repo.full_name].structure?.join(", ")}</div>
+                              <div className="overview-item"><strong>Languages:</strong> {repoOverviews[repo.full_name].languages?.join(", ")}</div>
+                              <div className="overview-item"><strong>Frameworks:</strong> {repoOverviews[repo.full_name].frameworks?.join(", ")}</div>
+                              <div className="overview-item"><strong>Dependencies:</strong> {repoOverviews[repo.full_name].dependencies?.join(", ")}</div>
+                              <div className="overview-item"><strong>Entry Points:</strong> {repoOverviews[repo.full_name].entry_points?.join(", ")}</div>
+                              <div className="overview-item"><strong>API Endpoints:</strong> {repoOverviews[repo.full_name].apis?.join(", ")}</div>
+                              <div className="overview-item"><strong>MCP Components:</strong> {repoOverviews[repo.full_name].mcp_components?.join(", ")}</div>
+                              <div className="overview-item"><strong>Configuration:</strong> {repoOverviews[repo.full_name].configuration?.join(", ")}</div>
+                              <div className="overview-item"><strong>Testing:</strong> {repoOverviews[repo.full_name].testing?.join(", ")}</div>
+                              <div className="overview-item"><strong>Deployment:</strong> {repoOverviews[repo.full_name].deployment?.join(", ")}</div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -890,7 +1088,7 @@ function App() {
                             key={agentName}
                           >
                             <div className="agent-card-icon">
-                              {agentName === "salary_agent" ? "$" : "◈"}
+                              {agentName === "salary_agent" ? "$" : agentName === "developer_agent" ? "{" : "◈"}
                             </div>
 
                             <div>
@@ -899,7 +1097,9 @@ function App() {
                                   ? "Salary Agent"
                                   : agentName === "company_agent"
                                     ? "Company Agent"
-                                    : agentName}
+                                    : agentName === "developer_agent"
+                                      ? "Developer Agent"
+                                      : agentName}
                               </strong>
 
                               <span>
