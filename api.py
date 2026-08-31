@@ -65,6 +65,7 @@ app.add_middleware(
         "http://127.0.0.1:5174",
         "https://mcp-orchestrator-bay.vercel.app"
         "https://developertool-psi.vercel.app",
+        "https://developer-tool-git-main-avinashreddy6631s-projects.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
