@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+
 from auth import (
     auth_required,
     authenticate_user,
@@ -61,17 +62,14 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "http://localhost:5174",
         "http://127.0.0.1:5174",
-        "https://mcp-orchestrator-bay.vercel.app"
-        "https://developertool-psi.vercel.app",
-        "https://developer-tool-git-main-avinashreddy6631s-projects.vercel.app"
+        "https://developer-tool-psi.vercel.app",
+        "https://developer-tool-git-main-avinashreddy6631s-projects.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ============================================================
 # REQUEST MODELS
