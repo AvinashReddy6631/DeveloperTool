@@ -1,5 +1,8 @@
 import asyncio
 import sys
+import urllib.error
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -344,3 +347,169 @@ def test_generic_village_reference_requests_a_specific_location(monkeypatch):
     assert result["status"] == "error"
     assert "Please include a city, area, district, or location name." in result["error"]
     assert calls == []
+
+
+def real_hyderabad_candidates():
+    return [
+        indian_candidate("Hyderabad", 17.6687464, 77.5898867, "Telangana"),
+        {
+            "name": "Hyderabad City Taluka",
+            "lat": 25.3868287,
+            "lon": 68.3714971,
+            "state": "Sindh",
+            "country": "PK",
+        },
+        {
+            "name": "Hyderabad",
+            "lat": 25.4075358,
+            "lon": 68.36134563257718,
+            "state": "Sindh",
+            "country": "PK",
+        },
+        indian_candidate("Hyderabad", 17.360589, 78.4740613, "Telangana"),
+    ]
+
+
+def test_unqualified_hyderabad_prefers_telangana_city(monkeypatch):
+    calls = mock_openweather(monkeypatch, real_hyderabad_candidates())
+
+    result = run_async(
+        weather_agent.weather_agent("What is the weather in Hyderabad?")
+    )
+
+    assert result["status"] == "success"
+    assert "**Weather in Hyderabad, Telangana, India**" in result["answer"]
+    assert_coordinate_weather_request(calls, 17.360589, 78.4740613)
+
+
+def test_unqualified_mumbai_prefers_maharashtra_city(monkeypatch):
+    calls = mock_openweather(
+        monkeypatch,
+        [
+            indian_candidate("Mumbai", 18.9733536, 72.82810491917377, "Maharashtra"),
+            {
+                "name": "Mumbai",
+                "lat": -5.333321,
+                "lon": 144.5685889,
+                "state": "Madang",
+                "country": "PG",
+            },
+            indian_candidate("Mumbai", 19.054999, 72.8692035, "Maharashtra"),
+        ],
+    )
+
+    result = run_async(
+        weather_agent.weather_agent("What is the weather in Mumbai?")
+    )
+
+    assert result["status"] == "success"
+    assert "**Weather in Mumbai, Maharashtra, India**" in result["answer"]
+    assert_coordinate_weather_request(calls, 19.054999, 72.8692035)
+
+
+def test_unqualified_bengaluru_resolves_karnataka_city(monkeypatch):
+    calls = mock_openweather(
+        monkeypatch,
+        [indian_candidate("Bengaluru", 12.9767936, 77.590082, "Karnataka")],
+    )
+
+    result = run_async(
+        weather_agent.weather_agent("What is the weather in Bengaluru?")
+    )
+
+    assert result["status"] == "success"
+    assert "**Weather in Bengaluru, Karnataka, India**" in result["answer"]
+    assert_coordinate_weather_request(calls, 12.9767936, 77.590082)
+
+
+def test_explicitly_qualified_hyderabad_is_preserved(monkeypatch):
+    calls = mock_openweather(monkeypatch, real_hyderabad_candidates())
+
+    result = run_async(
+        weather_agent.weather_agent(
+            "What is the weather in Hyderabad, Telangana, India?"
+        )
+    )
+
+    assert result["status"] == "success"
+    assert "**Weather in Hyderabad, Telangana, India**" in result["answer"]
+    assert_coordinate_weather_request(calls, 17.360589, 78.4740613)
+    assert parse_qs(urlparse(calls[0]).query)["q"] == [
+        "Hyderabad, Telangana, India"
+    ]
+
+
+def test_ambiguous_location_requests_clarification(monkeypatch):
+    calls = mock_openweather(
+        monkeypatch,
+        [
+            indian_candidate("Rampur", 28.0, 79.0, "Uttar Pradesh"),
+            indian_candidate("Rampur", 22.0, 88.0, "West Bengal"),
+        ],
+    )
+
+    result = run_async(
+        weather_agent.weather_agent("What is the weather in Rampur?")
+    )
+
+    assert result["status"] == "error"
+    assert "Multiple locations match 'Rampur'" in result["error"]
+    assert "district, state, or country" in result["error"]
+    assert len(calls) == 1
+
+
+def test_openweather_401_returns_provider_error(monkeypatch):
+    async def fake_fetch_json(url):
+        raise urllib.error.HTTPError(
+            url,
+            401,
+            "Unauthorized",
+            Message(),
+            BytesIO(b""),
+        )
+
+    monkeypatch.setattr(weather_agent, "OPENWEATHER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        weather_agent,
+        "get_openweather_api_key",
+        lambda: "test-key",
+    )
+    monkeypatch.setattr(weather_agent, "fetch_json", fake_fetch_json)
+
+    result = run_async(
+        weather_agent.weather_agent("What is the weather in Hyderabad?")
+    )
+
+    assert result["status"] == "error"
+    assert result["agent"] == "weather_agent"
+    assert result["error"] == (
+        "OpenWeather authentication failed. "
+        "Please check your OPENWEATHER_API_KEY."
+    )
+
+
+def test_geocoding_failure_returns_provider_error(monkeypatch):
+    async def fake_fetch_json(url):
+        raise urllib.error.HTTPError(
+            url,
+            500,
+            "Server Error",
+            Message(),
+            BytesIO(b""),
+        )
+
+    monkeypatch.setattr(weather_agent, "OPENWEATHER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        weather_agent,
+        "get_openweather_api_key",
+        lambda: "test-key",
+    )
+    monkeypatch.setattr(weather_agent, "fetch_json", fake_fetch_json)
+
+    result = run_async(
+        weather_agent.weather_agent("What is the weather in Hyderabad?")
+    )
+
+    assert result["status"] == "error"
+    assert result["agent"] == "weather_agent"
+    assert result["error"] == "OpenWeather request failed with HTTP 500."

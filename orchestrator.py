@@ -253,27 +253,29 @@ def _record_agent_trace(trace, result, fallback_agent):
 
     tool_name = "get_company_statistics"
 
-    # The agent result may contain the original query.
+# The agent result may contain the original query.
     agent_query = (
         result.get("query")
         or result.get("user_query")
-        or ""
+        or ""   
     )
 
     query_lower = str(
         agent_query
     ).lower()
 
-    if (
-        agent_name == "company_agent"
-        and (
-            "employee" in query_lower
-            or "employees" in query_lower
-            or "workforce" in query_lower
-        )
-    ):
-        tool_name = "company_search"
+    if agent_name == "developer_agent":
+        tool_name = "github_repository_analysis"
 
+    elif (
+    agent_name == "company_agent"
+    and (
+        "employee" in query_lower
+        or "employees" in query_lower
+        or "workforce" in query_lower
+    )
+):
+        tool_name = "company_search"
     # --------------------------------------------------------
     # 4. Extract company from the query
     # --------------------------------------------------------
@@ -862,6 +864,26 @@ def local_route(user_query):
     if has_github_url or has_github_request:
         return "DEVELOPER"
 
+    # Weather questions must not fall through to DEVELOPER
+    # just because they contain an incidental technical word.
+    weather_intent_patterns = [
+        "weather in ",
+        "weather for ",
+        "weather at ",
+        "what's the weather",
+        "what is the weather",
+        "temperature in ",
+        "forecast for ",
+        "forecast in ",
+        "weather forecast",
+        "humidity in ",
+        "rain in ",
+        "wind in ",
+    ]
+
+    if any(pattern in query for pattern in weather_intent_patterns):
+        return "WEATHER"
+
     # ========================================================
     # DEVELOPER / CODE / AI ENGINEERING
     #
@@ -876,6 +898,9 @@ def local_route(user_query):
         "javascript",
         "typescript",
         "java ",
+        "binary search",
+        "linked list",
+        "linkedlist",
         "c++",
         "c#",
         "golang",
@@ -1884,7 +1909,8 @@ def validate_agent_result(
 
     if result["status"] not in [
         "success",
-        "error"
+        "error",
+        "partial",
     ]:
 
         result["status"] = "error"
@@ -2176,7 +2202,7 @@ async def orchestrate(
             result
         )
 
-        if result["status"] == "success":
+        if result["status"] in ("success", "partial"):
             print("\nFinal Answer:")
             print(result.get("answer") or "")
 

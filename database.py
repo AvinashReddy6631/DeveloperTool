@@ -7,12 +7,19 @@ load_dotenv()
 # ============================================
 # PostgreSQL Configuration
 # ============================================
+def env_value(name, default=None):
+    value = os.getenv(name, default)
+    if value is None:
+        return None
+    return str(value).strip().strip('"').strip("'")
+
+
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST"),
-    "database": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "port": int(os.getenv("DB_PORT", 5432))
+    "host": env_value("DB_HOST"),
+    "database": env_value("DB_NAME"),
+    "user": env_value("DB_USER"),
+    "password": env_value("DB_PASSWORD"),
+    "port": int(env_value("DB_PORT", "5432"))
 }
 
 

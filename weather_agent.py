@@ -1,6 +1,7 @@
 import asyncio
 import difflib
 import json
+import math
 import os
 import re
 import time
@@ -14,6 +15,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+
+
+def get_openweather_api_key():
+    load_dotenv()
+    env_key = os.getenv("OPENWEATHER_API_KEY")
+    if env_key and str(env_key).strip():
+        return str(env_key).strip().strip('"').strip("'")
+    if OPENWEATHER_API_KEY:
+        return str(OPENWEATHER_API_KEY).strip().strip('"').strip("'")
+    return None
 
 GEOCODING_URL = "https://api.openweathermap.org/geo/1.0/direct"
 CURRENT_WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
@@ -29,6 +40,74 @@ COUNTRY_ALIASES = {
     "usa": "US",
     "us": "US",
     "unitedstates": "US",
+}
+
+# Canonical city centers used only to resolve geocoding ties.
+# Weather values still come from OpenWeather coordinates.
+CANONICAL_CITIES = {
+    "hyderabad": {
+        "country": "IN",
+        "states": {"telangana"},
+        "lat": 17.385044,
+        "lon": 78.486671,
+    },
+    "mumbai": {
+        "country": "IN",
+        "states": {"maharashtra"},
+        "lat": 19.0760,
+        "lon": 72.8777,
+    },
+    "delhi": {
+        "country": "IN",
+        "states": {"delhi"},
+        "lat": 28.6139,
+        "lon": 77.2090,
+    },
+    "newdelhi": {
+        "country": "IN",
+        "states": {"delhi"},
+        "lat": 28.6139,
+        "lon": 77.2090,
+    },
+    "bengaluru": {
+        "country": "IN",
+        "states": {"karnataka"},
+        "lat": 12.9716,
+        "lon": 77.5946,
+    },
+    "chennai": {
+        "country": "IN",
+        "states": {"tamilnadu"},
+        "lat": 13.0827,
+        "lon": 80.2707,
+    },
+    "pune": {
+        "country": "IN",
+        "states": {"maharashtra"},
+        "lat": 18.5204,
+        "lon": 73.8567,
+    },
+    "kolkata": {
+        "country": "IN",
+        "states": {"westbengal"},
+        "lat": 22.5726,
+        "lon": 88.3639,
+    },
+}
+
+CITY_ALIASES = {
+    "hyderabad": "hyderabad",
+    "mumbai": "mumbai",
+    "bombay": "mumbai",
+    "delhi": "delhi",
+    "newdelhi": "newdelhi",
+    "bengaluru": "bengaluru",
+    "bangalore": "bengaluru",
+    "chennai": "chennai",
+    "madras": "chennai",
+    "pune": "pune",
+    "kolkata": "kolkata",
+    "calcutta": "kolkata",
 }
 
 
@@ -183,6 +262,191 @@ def location_key(location: str) -> str:
     )
 
 
+def haversine_km(lat1, lon1, lat2, lon2) -> float:
+    """Return the great-circle distance between two coordinates."""
+
+    radius_km = 6371.0
+    delta_lat = math.radians(float(lat2) - float(lat1))
+    delta_lon = math.radians(float(lon2) - float(lon1))
+    origin_lat = math.radians(float(lat1))
+    dest_lat = math.radians(float(lat2))
+
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(origin_lat)
+        * math.cos(dest_lat)
+        * math.sin(delta_lon / 2) ** 2
+    )
+    return radius_km * 2 * math.atan2(
+        math.sqrt(a),
+        math.sqrt(max(0.0, 1 - a)),
+    )
+
+
+def canonical_city_for(location_context: dict):
+    """Return a known-city profile when the query names that city."""
+
+    if location_context.get("country_code") not in {None, "IN"}:
+        return None
+
+    matched = None
+    for part in location_context.get("parts") or []:
+        alias = CITY_ALIASES.get(location_key(part))
+        if alias:
+            matched = CANONICAL_CITIES[alias]
+            break
+
+    if not matched:
+        return None
+
+    for part in location_context.get("parts") or []:
+        part_key = location_key(part)
+        if CITY_ALIASES.get(part_key):
+            continue
+        if any(
+            part_key == expected
+            or expected in part_key
+            or part_key in expected
+            for expected in matched["states"]
+        ):
+            continue
+        return None
+
+    return matched
+
+
+def candidate_matches_canonical(candidate: dict, canonical: dict) -> bool:
+    if candidate.get("country") != canonical["country"]:
+        return False
+
+    expected_states = canonical.get("states") or set()
+    if not expected_states:
+        return True
+
+    state_key = location_key(str(candidate.get("state") or ""))
+    return any(
+        state_key == expected
+        or expected in state_key
+        or state_key in expected
+        for expected in expected_states
+    )
+
+
+def cluster_nearby_candidates(candidates: list[dict], radius_km: float = 30.0):
+    """Group same-place geocoding duplicates independently of API order."""
+
+    remaining = sorted(
+        candidates,
+        key=lambda item: (
+            float(item.get("lat") or 0),
+            float(item.get("lon") or 0),
+            location_key(str(item.get("name") or "")),
+        )
+    )
+    clusters = []
+
+    for candidate in remaining:
+        placed = False
+        for cluster in clusters:
+            if any(
+                haversine_km(
+                    candidate["lat"],
+                    candidate["lon"],
+                    member["lat"],
+                    member["lon"],
+                ) <= radius_km
+                for member in cluster
+            ):
+                cluster.append(candidate)
+                placed = True
+                break
+        if not placed:
+            clusters.append([candidate])
+
+    representatives = []
+    for cluster in clusters:
+        mean_lat = sum(float(item["lat"]) for item in cluster) / len(cluster)
+        mean_lon = sum(float(item["lon"]) for item in cluster) / len(cluster)
+        representatives.append(
+            min(
+                cluster,
+                key=lambda item: (
+                    haversine_km(
+                        item["lat"],
+                        item["lon"],
+                        mean_lat,
+                        mean_lon,
+                    ),
+                    location_key(str(item.get("name") or "")),
+                    float(item["lat"]),
+                    float(item["lon"]),
+                ),
+            )
+        )
+
+    return representatives
+
+
+def choose_canonical_candidate(candidates: list[dict], canonical: dict):
+    """Pick a uniquely closer match to a known city center, if one exists."""
+
+    matching = [
+        candidate
+        for candidate in candidates
+        if candidate_matches_canonical(candidate, canonical)
+    ]
+    if not matching:
+        return None
+
+    ranked = sorted(
+        matching,
+        key=lambda item: (
+            haversine_km(
+                item["lat"],
+                item["lon"],
+                canonical["lat"],
+                canonical["lon"],
+            ),
+            location_key(str(item.get("name") or "")),
+            float(item["lat"]),
+            float(item["lon"]),
+        ),
+    )
+    best = ranked[0]
+    best_distance = haversine_km(
+        best["lat"],
+        best["lon"],
+        canonical["lat"],
+        canonical["lon"],
+    )
+
+    if len(ranked) == 1:
+        return best if best_distance <= 80 else None
+
+    second_distance = haversine_km(
+        ranked[1]["lat"],
+        ranked[1]["lon"],
+        canonical["lat"],
+        canonical["lon"],
+    )
+
+    if second_distance - best_distance >= 15:
+        return best
+
+    if all(
+        haversine_km(
+            item["lat"],
+            item["lon"],
+            canonical["lat"],
+            canonical["lon"],
+        ) <= 35
+        for item in matching
+    ):
+        return best
+
+    return None
+
+
 # ============================================================
 # HTTP HELPER
 # ============================================================
@@ -218,7 +482,7 @@ async def fetch_geocoding_candidates(location: str):
     params = urllib.parse.urlencode({
         "q": location,
         "limit": 5,
-        "appid": OPENWEATHER_API_KEY,
+        "appid": get_openweather_api_key(),
     })
 
     url = (
@@ -393,6 +657,19 @@ def score_location_candidate(location_context: dict, candidate: dict):
     ) and state_match_indexes:
         score += 80
 
+    canonical = canonical_city_for(location_context)
+    if canonical and candidate_matches_canonical(candidate, canonical):
+        distance_km = haversine_km(
+            candidate["lat"],
+            candidate["lon"],
+            canonical["lat"],
+            canonical["lon"],
+        )
+        if distance_km <= 35:
+            score += 40
+        elif distance_km <= 80:
+            score += 10
+
     return score
 
 
@@ -467,8 +744,12 @@ def select_best_location_candidate(
 
 
     scored_candidates.sort(
-        key=lambda item: item[0],
-        reverse=True
+        key=lambda item: (
+            -item[0],
+            location_key(str(item[1].get("name") or "")),
+            float(item[1].get("lat") or 0),
+            float(item[1].get("lon") or 0),
+        )
     )
 
     top_score = scored_candidates[0][0]
@@ -479,10 +760,23 @@ def select_best_location_candidate(
         if top_score - score <= 2
     ]
 
-    if len(equally_strong) > 1:
-        return None, "ambiguous"
+    if len(equally_strong) == 1:
+        return equally_strong[0], None
 
-    return scored_candidates[0][1], None
+    canonical = canonical_city_for(location_context)
+    if canonical:
+        canonical_match = choose_canonical_candidate(
+            equally_strong,
+            canonical
+        )
+        if canonical_match:
+            return canonical_match, None
+
+    nearby_representatives = cluster_nearby_candidates(equally_strong)
+    if len(nearby_representatives) == 1:
+        return nearby_representatives[0], None
+
+    return None, "ambiguous"
 
 
 async def resolve_location(location: str):
@@ -522,7 +816,7 @@ async def fetch_current_weather(
     params = urllib.parse.urlencode({
         "lat": latitude,
         "lon": longitude,
-        "appid": OPENWEATHER_API_KEY,
+        "appid": get_openweather_api_key(),
         "units": "metric",
     })
 
@@ -541,7 +835,7 @@ async def weather_agent(query: str):
 
     start_time = time.perf_counter()
 
-    if not OPENWEATHER_API_KEY:
+    if not get_openweather_api_key():
 
         return {
             "agent": "weather_agent",

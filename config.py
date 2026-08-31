@@ -10,32 +10,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def env_value(name, default=None):
+    value = os.getenv(name, default)
+    if value is None:
+        return None
+    return str(value).strip().strip('"').strip("'")
+
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-OPENROUTER_API_KEY = os.getenv(
+OPENROUTER_API_KEY = env_value(
     "OPENROUTER_API_KEY"
 )
 
-DB_HOST = os.getenv(
+DB_HOST = env_value(
     "DB_HOST"
 )
 
-DB_NAME = os.getenv(
+DB_NAME = env_value(
     "DB_NAME"
 )
 
-DB_USER = os.getenv(
+DB_USER = env_value(
     "DB_USER"
 )
 
-DB_PASSWORD = os.getenv(
+DB_PASSWORD = env_value(
     "DB_PASSWORD"
 )
 
 DB_PORT = int(
-    os.getenv(
+    env_value(
         "DB_PORT",
         "5432"
     )

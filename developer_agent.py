@@ -18,13 +18,19 @@ load_dotenv()
 # ============================================================
 
 # Maximum characters allowed per individual analysis group.
-MAX_GROUP_CHARS = int(os.getenv("MAX_GROUP_CHARS", "5000"))
+MAX_GROUP_CHARS = int(os.getenv("MAX_GROUP_CHARS", "3500"))
 
-# Maximum groups to analyze (can be configured via env var)
-MAX_ANALYSIS_GROUPS = int(os.getenv("MAX_ANALYSIS_GROUPS", "8"))
+# Maximum LLM analysis calls per repository request.
+MAX_ANALYSIS_GROUPS = int(os.getenv("MAX_ANALYSIS_GROUPS", "4"))
+
+# Highest-priority files to fetch as evidence (not the whole tree).
+MAX_FILES_TO_FETCH = int(os.getenv("DEVELOPER_MAX_FILES", "12"))
+
+# Per-file evidence cap before grouping.
+MAX_FILE_CHARS = int(os.getenv("DEVELOPER_MAX_FILE_CHARS", "8000"))
 
 # Maximum tokens for LLM output (configured via env var)
-DEVELOPER_MAX_TOKENS = int(os.getenv("DEVELOPER_MAX_TOKENS", "400"))
+DEVELOPER_MAX_TOKENS = int(os.getenv("DEVELOPER_MAX_TOKENS", "250"))
 
 # Delay between group requests to prevent triggering rate limits.
 BATCH_DELAY_SECONDS = float(os.getenv("DEVELOPER_AGENT_BATCH_DELAY", "1.5"))
@@ -798,6 +804,61 @@ def _score_code_file(path, query_intent="general"):
     return score, category
 
 
+def _number_source_lines(source: str, start_line: int = 1) -> str:
+    lines = str(source or "").split("\n")
+    return "\n".join(
+        f"{index:03d} | {line}"
+        for index, line in enumerate(lines, start_line)
+    )
+
+
+def _file_evidence_block(file_info: dict, max_chars: int) -> str:
+    raw = str(
+        file_info.get("raw_content")
+        or file_info.get("content")
+        or ""
+    )
+
+    if max_chars <= 0 or not raw:
+        return ""
+
+    lines = raw.splitlines()
+
+    # Keep the beginning and end of large files so the model
+    # gets imports/configuration AND later implementation.
+    if len(raw) <= max_chars:
+        selected = raw
+        truncated = False
+    else:
+        head_chars = max_chars // 2
+        tail_chars = max_chars - head_chars
+
+        head = raw[:head_chars]
+        tail = raw[-tail_chars:]
+
+        selected = (
+            head
+            + "\n\n"
+            + "[... MIDDLE OF FILE OMITTED ...]\n\n"
+            + tail
+        )
+        truncated = True
+
+    numbered = _number_source_lines(selected)
+
+    truncated_mark = (
+        "\n[FILE EVIDENCE PARTIALLY TRUNCATED]"
+        if truncated
+        else ""
+    )
+
+    return (
+        f"\n===== FILE: {file_info['path']} =====\n"
+        f"{numbered}"
+        f"{truncated_mark}\n"
+        f"===== END FILE =====\n"
+    )
+
 def github_repository_code_context(
     url,
     requested_files=None,
@@ -869,7 +930,7 @@ def github_repository_code_context(
                 missing_requested_paths.append(requested)
     else:
         ranked = sorted(scored_files, key=lambda x: x["_score"], reverse=True)
-        max_files_to_fetch = min(40, len(ranked))
+        max_files_to_fetch = min(MAX_FILES_TO_FETCH, len(ranked))
         selected_paths = [item.get("path") for item in ranked[:max_files_to_fetch]]
 
     # Pass 3: File Retrieval
@@ -910,28 +971,28 @@ def github_repository_code_context(
 
         original_size = len(content)
         truncated = False
-        max_file_chars = 15000
 
         raw_content_backup = content
 
-        if original_size > max_file_chars:
-            content = content[:max_file_chars] + "\n\n[FILE TRUNCATED FOR ANALYSIS]"
+        if original_size > MAX_FILE_CHARS:
+            content = content[:MAX_FILE_CHARS]
             truncated = True
             truncated_files_count += 1
 
         retrieved_size = len(content)
 
-        lines = content.split('\n')
-        numbered_content = '\n'.join(f"{i:03d} | {line}" for i, line in enumerate(lines, 1))
-
         selected_files.append({
             "path": path,
-            "content": numbered_content,
-            "raw_content": raw_content_backup,
+            "content": content,
+            "raw_content": raw_content_backup[:MAX_FILE_CHARS] if truncated else raw_content_backup,
             "truncated": truncated,
             "original_size": original_size,
             "retrieved_size": retrieved_size,
-            "category": file_categories.get(path, "OTHER")
+            "category": file_categories.get(path, "OTHER"),
+            "_score": next(
+                (item.get("_score", 0) for item in scored_files if item.get("path") == path),
+                0,
+            ),
         })
         retrieved_paths.append(path)
 
@@ -975,54 +1036,73 @@ def github_repository_code_context(
 
     grouped_files = {k: [] for k in SUPER_GROUP_ORDER}
     for f in selected_files:
-        if f.get("error") or not f.get("content"): 
+        if f.get("error") or not (f.get("raw_content") or f.get("content")):
             continue
         gname = SUPER_GROUP_MAP.get(f.get("category", "OTHER"), "Dependencies, Build & Deployment")
         if gname in grouped_files:
             grouped_files[gname].append(f)
-        
+
     analysis_groups = []
     group_id_counter = 1
-    
+
     for gname in SUPER_GROUP_ORDER:
-        gfiles = grouped_files.get(gname, [])
+        if len(analysis_groups) >= MAX_ANALYSIS_GROUPS:
+            break
+
+        gfiles = sorted(
+            grouped_files.get(gname, []),
+            key=lambda item: item.get("_score", 0),
+            reverse=True,
+        )
         if not gfiles:
             continue
-            
-        parts_needed = []
+
         current_text = ""
         current_files = []
-        
+
         for file_info in gfiles:
-            file_text = f"\n===== FILE: {file_info['path']} =====\n{file_info['content']}\n===== END FILE =====\n"
-            if len(current_text) + len(file_text) > MAX_GROUP_CHARS and current_text:
-                parts_needed.append((current_files, current_text))
-                current_text = file_text
-                current_files = [file_info["path"]]
-            else:
-                current_text += file_text
-                current_files.append(file_info["path"])
-                
-        if current_text:
-            parts_needed.append((current_files, current_text))
-            
-        is_split = len(parts_needed) > 1
-        
-        for idx, (p_files, p_text) in enumerate(parts_needed):
-            cat_name = f"{gname} (Part {idx+1})" if is_split else gname
+            if len(analysis_groups) >= MAX_ANALYSIS_GROUPS:
+                break
+
+            remaining = MAX_GROUP_CHARS - len(current_text)
+            if remaining < 240 and current_text:
+                analysis_groups.append({
+                    "group_id": group_id_counter,
+                    "category": gname,
+                    "name": gname,
+                    "files": current_files,
+                    "content": current_text,
+                    "text": current_text,
+                    "file_count": len(current_files),
+                    "content_length": len(current_text),
+                })
+                group_id_counter += 1
+                current_text = ""
+                current_files = []
+                remaining = MAX_GROUP_CHARS
+                if len(analysis_groups) >= MAX_ANALYSIS_GROUPS:
+                    break
+
+            block = _file_evidence_block(file_info, max(0, remaining - 80))
+            if not block.strip():
+                continue
+            current_text += block
+            current_files.append(file_info["path"])
+
+        if current_text and len(analysis_groups) < MAX_ANALYSIS_GROUPS:
             analysis_groups.append({
                 "group_id": group_id_counter,
-                "category": cat_name,
-                "name": cat_name,
-                "files": p_files,
-                "content": p_text,
-                "text": p_text,
-                "file_count": len(p_files),
-                "content_length": len(p_text)
+                "category": gname,
+                "name": gname,
+                "files": current_files,
+                "content": current_text,
+                "text": current_text,
+                "file_count": len(current_files),
+                "content_length": len(current_text),
             })
             group_id_counter += 1
 
-    # Build legacy LLM-ready context
+    # Metadata-only context. File bodies live only on their analysis group.
     context_parts = []
     context_parts.append(
         "===== REPOSITORY METADATA =====\n"
@@ -1056,17 +1136,15 @@ def github_repository_code_context(
         context_parts.append(f"\nIMPORTANT FILES NOT RETRIEVED:")
         for p in important_missing[:20]: context_parts.append(f" - {p}")
 
-    context_parts.append("\n===== SELECTED FILE CONTENT =====")
+    context_parts.append("\n===== ANALYSIS GROUPS =====")
     for g in analysis_groups:
-        context_parts.append(g["content"])
+        context_parts.append(
+            f" - Group {g['group_id']}: {g['category']} "
+            f"({g['file_count']} files, {g['content_length']} chars)"
+        )
 
     context = "\n".join(context_parts)
     context_truncated = False
-
-    max_context_chars = 40000
-    if len(context) > max_context_chars:
-        context = context[:max_context_chars] + "\n\n[REPOSITORY CONTEXT TRUNCATED FOR LLM ANALYSIS]"
-        context_truncated = True
 
     return {
         "repository": {
@@ -1102,11 +1180,12 @@ def github_repository_code_context(
     }
 
 
-def _limit_group_content(content, max_chars=5000):
+def _limit_group_content(content, max_chars=None):
     """
-    Limits the supplied source code content for a group to max_chars (default 5000),
-    preserving the beginning of each file and clearly marking truncation.
+    Limits the supplied source code content for a group.
     """
+    if max_chars is None:
+        max_chars = MAX_GROUP_CHARS
     if not content:
         return content, False
     
@@ -1424,15 +1503,387 @@ def build_final_report(group_results, repository_metadata=None):
     }
 
 
+def format_repository_analysis_response(report):
+    """
+    Converts the structured repository analysis report into a
+    clean human-readable response for the frontend/API.
+    """
+
+    if not isinstance(report, dict):
+        return "Repository analysis could not be formatted."
+
+    metadata = report.get("repository_metadata") or {}
+
+    lines = []
+
+    lines.append("=" * 60)
+    lines.append("GITHUB REPOSITORY ANALYSIS")
+    lines.append("=" * 60)
+
+    lines.append("")
+    lines.append("REPOSITORY")
+    lines.append("-" * 60)
+
+    lines.append(
+        f"Repository: {metadata.get('full_name', 'Unknown')}"
+    )
+    lines.append(
+        f"Branch: {metadata.get('branch', 'Unknown')}"
+    )
+    lines.append(
+        f"Language: {metadata.get('language', 'Unknown')}"
+    )
+    lines.append(
+        f"Stars: {metadata.get('stars', 0):,}"
+    )
+    lines.append(
+        f"Forks: {metadata.get('forks', 0):,}"
+    )
+    lines.append(
+        f"Open Issues: {metadata.get('open_issues', 0)}"
+    )
+    lines.append(
+        f"License: {metadata.get('license', 'Unknown')}"
+    )
+
+    lines.append("")
+    lines.append("SUMMARY")
+    lines.append("-" * 60)
+
+    lines.append(
+        f"Status: {str(report.get('status', 'unknown')).upper()}"
+    )
+    lines.append(
+        f"Total Findings: {report.get('total_findings', 0)}"
+    )
+
+    group_results = report.get("group_results") or []
+
+    successful_groups = sum(
+        1 for group in group_results
+        if group.get("status") == "success"
+    )
+
+    failed_groups = sum(
+        1 for group in group_results
+        if group.get("status") == "error"
+    )
+
+    lines.append(f"Groups Analyzed: {len(group_results)}")
+    lines.append(f"Successful Groups: {successful_groups}")
+    lines.append(f"Failed Groups: {failed_groups}")
+
+    # --------------------------------------------------------
+    # FINDINGS
+    # --------------------------------------------------------
+
+    findings = report.get("findings") or []
+
+    lines.append("")
+    lines.append("FINDINGS")
+    lines.append("-" * 60)
+
+    if not findings:
+        lines.append("No findings identified.")
+
+    else:
+        for index, finding in enumerate(findings, 1):
+
+            lines.append("")
+            lines.append(
+                f"{index}. {finding.get('title', 'Untitled finding')}"
+            )
+
+            lines.append(
+                f"   Category: {finding.get('category', 'Unknown')}"
+            )
+
+            lines.append(
+                f"   Severity: {finding.get('severity', 'Unknown')}"
+            )
+
+            lines.append(
+                f"   Confidence: {finding.get('confidence', 'Unknown')}"
+            )
+
+            lines.append(
+                f"   File: {finding.get('file', 'Unknown')}"
+            )
+
+            lines.append(
+                f"   Lines: "
+                f"{finding.get('line_start', '?')}-"
+                f"{finding.get('line_end', '?')}"
+            )
+
+            if finding.get("evidence"):
+                lines.append(
+                    f"   Evidence: {finding.get('evidence')}"
+                )
+
+            if finding.get("problem"):
+                lines.append(
+                    f"   Problem: {finding.get('problem')}"
+                )
+
+            if finding.get("impact"):
+                lines.append(
+                    f"   Impact: {finding.get('impact')}"
+                )
+
+            if finding.get("recommendation"):
+                lines.append(
+                    f"   Recommendation: "
+                    f"{finding.get('recommendation')}"
+                )
+
+    # --------------------------------------------------------
+    # POSITIVE FINDINGS
+    # --------------------------------------------------------
+
+    positive_findings = report.get("positive_findings") or []
+
+    lines.append("")
+    lines.append("POSITIVE FINDINGS")
+    lines.append("-" * 60)
+
+    if not positive_findings:
+        lines.append("No positive findings recorded.")
+
+    else:
+        for index, finding in enumerate(positive_findings, 1):
+
+            lines.append(
+                f"{index}. "
+                f"{finding.get('explanation', 'Positive finding')}"
+            )
+
+            lines.append(
+                f"   File: {finding.get('file', 'Unknown')}"
+            )
+
+            lines.append(
+                f"   Lines: "
+                f"{finding.get('line_start', '?')}-"
+                f"{finding.get('line_end', '?')}"
+            )
+
+            if finding.get("evidence"):
+                lines.append(
+                    f"   Evidence: {finding.get('evidence')}"
+                )
+
+    # --------------------------------------------------------
+    # GAPS
+    # --------------------------------------------------------
+
+    gaps = report.get("gaps") or []
+
+    lines.append("")
+    lines.append("GAPS / AREAS REQUIRING MORE EVIDENCE")
+    lines.append("-" * 60)
+
+    if not gaps:
+        lines.append("No evidence gaps reported.")
+
+    else:
+        for index, gap in enumerate(gaps, 1):
+            lines.append(f"{index}. {gap}")
+
+    # --------------------------------------------------------
+    # GROUP DETAILS
+    # --------------------------------------------------------
+
+    lines.append("")
+    lines.append("ANALYSIS GROUPS")
+    lines.append("-" * 60)
+
+    for group in group_results:
+
+        group_id = group.get("group_id", "?")
+        category = group.get("category", "Unknown")
+        status = group.get("status", "unknown")
+
+        group_findings = group.get("findings") or []
+        group_positive = group.get("positive_findings") or []
+        group_gaps = group.get("gaps") or []
+
+        lines.append("")
+        lines.append(
+            f"Group {group_id}: {category}"
+        )
+
+        lines.append(
+            f"Status: {str(status).upper()}"
+        )
+
+        lines.append(
+            f"Findings: {len(group_findings)}"
+        )
+
+        lines.append(
+            f"Positive Findings: {len(group_positive)}"
+        )
+
+        lines.append(
+            f"Gaps: {len(group_gaps)}"
+        )
+
+    lines.append("")
+    lines.append("=" * 60)
+
+    return "\n".join(lines)
 # ============================================================
 # LLM HELPERS & SAFE WRAPPER
 # ============================================================
 
-def _call_llm_with_retry(client, model, system_prompt, user_prompt, max_retries=3, test_mode=False, group_name="Group", max_tokens=None):
+def _developer_analysis_model():
+    return (
+        os.getenv("DEVELOPER_ANALYSIS_MODEL")
+        or os.getenv("OPENROUTER_MODEL")
+        or "openrouter/free"
+    )
+
+
+def _model_env_source():
+    if os.getenv("DEVELOPER_ANALYSIS_MODEL"):
+        return "DEVELOPER_ANALYSIS_MODEL"
+    if os.getenv("OPENROUTER_MODEL"):
+        return "OPENROUTER_MODEL"
+    return "default:openrouter/free"
+
+
+def _estimate_input_tokens(char_count: int) -> int:
+    return max(1, int(round(int(char_count) / 4)))
+
+
+def _openrouter_status_from_exc(exc):
+    status = getattr(exc, "status_code", None)
+    error_code = getattr(exc, "code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    if error_code is None:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error = body.get("error") if isinstance(body.get("error"), dict) else {}
+            error_code = error.get("code") or body.get("code")
+    return status, error_code
+
+
+def _log_openrouter_request(
+    *,
+    model,
+    max_tokens,
+    messages,
+    group_id,
+    group_number,
+    file_count,
+    evidence_chars,
+    started_at,
+):
+    roles = [str(message.get("role") or "unknown") for message in messages]
+    message_chars = [len(str(message.get("content") or "")) for message in messages]
+    prompt_chars = sum(message_chars)
+    print("OPENROUTER REQUEST")
+    print(f"model={model}")
+    print(f"model_source={_model_env_source()}")
+    print(f"max_tokens={max_tokens}")
+    print(f"developer_max_tokens_constant={DEVELOPER_MAX_TOKENS}")
+    print(f"messages={len(messages)}")
+    print(f"message_roles={','.join(roles)}")
+    print(
+        "message_chars="
+        + ",".join(str(count) for count in message_chars)
+    )
+    print(f"prompt_chars={prompt_chars}")
+    print(f"estimated_input_tokens={_estimate_input_tokens(prompt_chars)}")
+    print(f"group_id={group_id}")
+    print(f"group_number={group_number}")
+    print(f"files_in_group={file_count}")
+    print(f"evidence_chars={evidence_chars}")
+    print(f"started_at={started_at:.3f}")
+
+
+def _log_openrouter_response(
+    *,
+    status,
+    error_code,
+    ended_at,
+    elapsed,
+):
+    print("OPENROUTER RESPONSE")
+    print(f"status={status}")
+    print(f"error_code={error_code}")
+    print(f"ended_at={ended_at:.3f}")
+    print(f"elapsed_s={elapsed:.3f}")
+
+
+def _log_llm_call(
+    *,
+    model,
+    group_number,
+    group_name,
+    input_chars,
+    max_tokens,
+    elapsed,
+    status,
+    error=None,
+):
+    error_note = ""
+    if error:
+        sanitized = str(error)
+        lowered = sanitized.lower()
+        if "api_key" in lowered or "authorization" in lowered or "bearer " in lowered:
+            sanitized = "redacted provider error"
+        error_note = f" error={sanitized[:180]}"
+    print(
+        "[DeveloperAgent LLM] "
+        f"model={model} "
+        f"group={group_number} "
+        f"name={group_name} "
+        f"input_chars={input_chars} "
+        f"max_tokens={max_tokens} "
+        f"elapsed_s={elapsed:.3f} "
+        f"status={status}"
+        f"{error_note}"
+    )
+
+
+def _call_llm_with_retry(
+    client,
+    model,
+    system_prompt,
+    user_prompt,
+    max_retries=3,
+    test_mode=False,
+    group_name="Group",
+    max_tokens=None,
+    group_number=None,
+    group_id=None,
+    file_count=None,
+    evidence_chars=None,
+):
     if max_tokens is None:
         max_tokens = DEVELOPER_MAX_TOKENS
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    input_chars = sum(len(str(message.get("content") or "")) for message in messages)
+    started = time.perf_counter()
+
     if test_mode:
+        _log_llm_call(
+            model=model,
+            group_number=group_number or group_name,
+            group_name=group_name,
+            input_chars=input_chars,
+            max_tokens=max_tokens,
+            elapsed=time.perf_counter() - started,
+            status="success",
+        )
         return json.dumps({
             "category": group_name,
             "findings": [{
@@ -1464,37 +1915,213 @@ def _call_llm_with_retry(client, model, system_prompt, user_prompt, max_retries=
     
     while attempt < max_retries:
         try:
+            call_started = time.perf_counter()
+            _log_openrouter_request(
+                model=model,
+                max_tokens=current_max_tokens,
+                messages=messages,
+                group_id=group_id if group_id is not None else group_number,
+                group_number=group_number,
+                file_count=file_count,
+                evidence_chars=evidence_chars if evidence_chars is not None else input_chars,
+                started_at=call_started,
+            )
             response = client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                messages=messages,
                 max_tokens=current_max_tokens,
                 timeout=LLM_REQUEST_TIMEOUT
+            )
+            call_ended = time.perf_counter()
+            _log_openrouter_response(
+                status=200,
+                error_code=None,
+                ended_at=call_ended,
+                elapsed=call_ended - call_started,
+            )
+            _log_llm_call(
+                model=model,
+                group_number=group_number or group_name,
+                group_name=group_name,
+                input_chars=input_chars,
+                max_tokens=current_max_tokens,
+                elapsed=time.perf_counter() - call_started,
+                status="success",
             )
             return response.choices[0].message.content, None
         except Exception as exc:
             error_msg = str(exc)
+            http_status, error_code = _openrouter_status_from_exc(exc)
+            if http_status is None:
+                if "402" in error_msg:
+                    http_status = 402
+                elif "403" in error_msg:
+                    http_status = 403
+                elif "401" in error_msg:
+                    http_status = 401
+                elif "429" in error_msg:
+                    http_status = 429
+            _log_openrouter_response(
+                status=http_status,
+                error_code=error_code or type(exc).__name__,
+                ended_at=time.perf_counter(),
+                elapsed=time.perf_counter() - started,
+            )
             
             # Non-retryable error check for HTTP 402 / 403 / insufficient credits / budget exhausted
             if "402" in error_msg or "403" in error_msg or "in_flight_budget_exhausted" in error_msg or "insufficient" in error_msg.lower() or "budget" in error_msg.lower():
-                print(f"[DeveloperAgent ERROR] OpenRouter budget exhausted or non-retryable limit error; skipping retries. Details: {error_msg}")
+                _log_llm_call(
+                    model=model,
+                    group_number=group_number or group_name,
+                    group_name=group_name,
+                    input_chars=input_chars,
+                    max_tokens=current_max_tokens,
+                    elapsed=time.perf_counter() - started,
+                    status="error",
+                    error="FATAL_LIMIT_ERROR",
+                )
+                print("[DeveloperAgent ERROR] OpenRouter budget exhausted or non-retryable limit error; skipping retries.")
                 return None, "FATAL_LIMIT_ERROR: OpenRouter credits/token budget are insufficient. Reduce prompt size/max_tokens, use a cheaper model, or add credits."
             
             if "401" in error_msg:
+                _log_llm_call(
+                    model=model,
+                    group_number=group_number or group_name,
+                    group_name=group_name,
+                    input_chars=input_chars,
+                    max_tokens=current_max_tokens,
+                    elapsed=time.perf_counter() - started,
+                    status="error",
+                    error="401",
+                )
                 return None, f"OpenRouter API error 401 (Unauthorized): Invalid API key."
 
             if "429" in error_msg or "502" in error_msg or "503" in error_msg or "500" in error_msg or "timeout" in error_msg.lower():
                 attempt += 1
                 if attempt >= max_retries:
+                    _log_llm_call(
+                        model=model,
+                        group_number=group_number or group_name,
+                        group_name=group_name,
+                        input_chars=input_chars,
+                        max_tokens=current_max_tokens,
+                        elapsed=time.perf_counter() - started,
+                        status="error",
+                        error="retry_exhausted",
+                    )
                     return None, error_msg
                 wait_time = min(15 * (2 ** (attempt - 1)), 60)
                 time.sleep(wait_time)
             else:
+                _log_llm_call(
+                    model=model,
+                    group_number=group_number or group_name,
+                    group_name=group_name,
+                    input_chars=input_chars,
+                    max_tokens=current_max_tokens,
+                    elapsed=time.perf_counter() - started,
+                    status="error",
+                    error="provider_error",
+                )
                 return None, error_msg
                 
     return None, "Max retries exceeded."
+
+
+def _answer_developer_question(
+    query,
+    client,
+    model,
+    api_key=None,
+    test_mode=False,
+    start_time=None,
+):
+    if start_time is None:
+        start_time = time.time()
+
+    if test_mode:
+        return {
+            "agent": "developer_agent",
+            "status": "success",
+            "error": None,
+            "answer": (
+                "MCP (Model Context Protocol) lets an orchestrator call "
+                "tools and specialist agents instead of sending every "
+                "question to a generic model."
+            ),
+            "tool_calls": 0,
+            "mcp_calls": 0,
+            "execution_time": round(time.time() - start_time, 3),
+        }
+
+    if client is None:
+        if not api_key:
+            api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            return {
+                "agent": "developer_agent",
+                "status": "error",
+                "error": "OPENROUTER_API_KEY is not configured.",
+                "error_code": "MISSING_OPENROUTER_KEY",
+                "answer": None,
+                "tool_calls": 0,
+                "mcp_calls": 0,
+                "execution_time": round(time.time() - start_time, 3),
+            }
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    system_prompt = (
+        "You are the Developer Agent. Answer software-engineering questions "
+        "clearly and accurately. Do not invent repository files, GitHub "
+        "evidence, or tool results. If you are unsure, say so."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": str(query)},
+            ],
+            max_tokens=max(DEVELOPER_MAX_TOKENS, 800),
+            timeout=LLM_REQUEST_TIMEOUT,
+        )
+        answer = response.choices[0].message.content if response.choices else None
+        if not answer or not str(answer).strip():
+            return {
+                "agent": "developer_agent",
+                "status": "error",
+                "error": "The developer model returned an empty answer.",
+                "error_code": "EMPTY_MODEL_RESPONSE",
+                "answer": None,
+                "tool_calls": 0,
+                "mcp_calls": 0,
+                "execution_time": round(time.time() - start_time, 3),
+            }
+        return {
+            "agent": "developer_agent",
+            "status": "success",
+            "error": None,
+            "answer": answer,
+            "tool_calls": 0,
+            "mcp_calls": 0,
+            "execution_time": round(time.time() - start_time, 3),
+        }
+    except Exception as exc:
+        error_text = str(exc)
+        return {
+            "agent": "developer_agent",
+            "status": "error",
+            "error": error_text,
+            "error_code": "DEVELOPER_LLM_ERROR",
+            "answer": None,
+            "tool_calls": 0,
+            "mcp_calls": 0,
+            "execution_time": round(time.time() - start_time, 3),
+        }
 
 
 # ============================================================
@@ -1567,7 +2194,7 @@ def developer_agent(
             api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
         )
-    model = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+    model = _developer_analysis_model()
 
     if is_repo_analysis and repository_code_context and repository_code_context.get("analysis_groups"):
         groups = repository_code_context["analysis_groups"]
@@ -1582,7 +2209,8 @@ def developer_agent(
         if start_idx >= len(groups):
             return {"status": "error", "error": f"start_group out of range. Total: {len(groups)}"}
 
-        end_idx = (start_idx + max_groups) if max_groups is not None else len(groups)
+        group_limit = MAX_ANALYSIS_GROUPS if max_groups is None else max_groups
+        end_idx = start_idx + group_limit
         groups_to_process = groups[start_idx:end_idx]
         
         analysis_results = []
@@ -1592,45 +2220,17 @@ def developer_agent(
         consecutive_empty = 0
 
         group_system_prompt = (
-            "You are an expert Repository Intelligence Code Reviewer. "
-            "Analyze the supplied files, source code, and configuration within this group. "
-            "Identify real code issues, security vulnerabilities, architectural flaws, bugs, or performance bottlenecks. "
-            "STRICT RULES:\n"
-            "1. ONLY allowed severities are P0, P1, P2, P3. NEVER generate P4.\n"
-            "2. Confidence must be VERIFIED or INFERRED based strictly on supplied evidence.\n"
-            "3. Never invent files, code, vulnerabilities, or behavior.\n"
-            "4. If evidence is insufficient, do not create a finding; place the issue in gaps instead.\n"
-            "5. Analysis is limited strictly to the supplied content below.\n"
-            "Return strict JSON matching the exact schema:\n"
-            "{\n"
-            "  \"category\": \"...\",\n"
-            "  \"findings\": [\n"
-            "    {\n"
-            "      \"category\": \"SECURITY|PERFORMANCE|ARCHITECTURE|BUG|MAINTAINABILITY\",\n"
-            "      \"title\": \"...\",\n"
-            "      \"severity\": \"P0|P1|P2|P3\",\n"
-            "      \"confidence\": \"VERIFIED|INFERRED\",\n"
-            "      \"file\": \"...\",\n"
-            "      \"line_start\": 1,\n"
-            "      \"line_end\": 1,\n"
-            "      \"evidence\": \"...\",\n"
-            "      \"problem\": \"...\",\n"
-            "      \"impact\": \"...\",\n"
-            "      \"recommendation\": \"...\",\n"
-            "      \"finding_type\": \"vulnerability|antipattern|bug|gap\"\n"
-            "    }\n"
-            "  ],\n"
-            "  \"positive_findings\": [\n"
-            "    {\n"
-            "      \"file\": \"...\",\n"
-            "      \"line_start\": 1,\n"
-            "      \"line_end\": 1,\n"
-            "      \"evidence\": \"...\",\n"
-            "      \"explanation\": \"...\"\n"
-            "    }\n"
-            "  ],\n"
-            "  \"gaps\": []\n"
-            "}"
+            "You are a repository code reviewer. Use only the supplied files. "
+            "Never invent files, architecture, bugs, or findings. "
+            "If evidence is missing, use gaps. Severities: P0-P3 only. "
+            "Confidence: VERIFIED or INFERRED. Return JSON only: "
+            '{"category":"...","findings":[{"category":"SECURITY|PERFORMANCE|'
+            'ARCHITECTURE|BUG|MAINTAINABILITY","title":"...","severity":"P0|P1|P2|P3",'
+            '"confidence":"VERIFIED|INFERRED","file":"...","line_start":1,"line_end":1,'
+            '"evidence":"...","problem":"...","impact":"...","recommendation":"...",'
+            '"finding_type":"vulnerability|antipattern|bug|gap"}],'
+            '"positive_findings":[{"file":"...","line_start":1,"line_end":1,'
+            '"evidence":"...","explanation":"..."}],"gaps":[]}'
         )
 
         for i, group in enumerate(groups_to_process):
@@ -1645,19 +2245,29 @@ def developer_agent(
             group_user_prompt = f"GROUP ID: {g_id}\nCATEGORY: {g_cat}\nFILES: {', '.join(g_files)}\n\nSUPPLIED REPOSITORY CONTENT:\n{limited_content}"
             
             print(
-                f"[DeveloperAgent DEBUG]\n"
-                f"Total Groups: {len(groups)}\n"
-                f"Selected Groups: {len(groups_to_process)}\n"
-                f"Current Group: {i+1}/{len(groups_to_process)}\n"
-                f"Max Tokens: {DEVELOPER_MAX_TOKENS}\n"
-                f"Original Chars: {original_len}\n"
-                f"Sent Chars: {len(group_user_prompt)}\n"
-                f"Truncated: {is_truncated}"
+                
+                f"[DeveloperAgent DEBUG] GROUP_CONTENT_PREVIEW="
+                f"{limited_content[:2000]}"
+
+                f"[DeveloperAgent DEBUG] "
+                f"model={model} "
+                f"group={i+1}/{len(groups_to_process)} "
+                f"group_id={g_id} "
+                f"name={g_cat} "
+                f"input_chars={len(group_system_prompt) + len(group_user_prompt)} "
+                f"max_tokens={DEVELOPER_MAX_TOKENS} "
+                f"original_chars={original_len} "
+             
+                      f"truncated={is_truncated}"
             )
 
             resp_text, err = _call_llm_with_retry(
                 client, model, group_system_prompt, group_user_prompt, 
-                test_mode=is_test_mode, group_name=g_cat, max_tokens=DEVELOPER_MAX_TOKENS
+                test_mode=is_test_mode, group_name=g_cat, max_tokens=DEVELOPER_MAX_TOKENS,
+                group_number=i + 1,
+                group_id=g_id,
+                file_count=len(g_files),
+                evidence_chars=len(limited_content),
             )
             
             if err:
@@ -1714,28 +2324,64 @@ def developer_agent(
                     print("[DeveloperAgent DEBUG] Stopping early due to 3 consecutive empty group results.")
                     break
 
+            if (
+                not is_test_mode
+                and not os.getenv("PYTEST_CURRENT_TEST")
+                and i + 1 < len(groups_to_process)
+                and BATCH_DELAY_SECONDS > 0
+            ):
+                time.sleep(BATCH_DELAY_SECONDS)
+
         report = build_final_report(analysis_results, repository_metadata=repo_data)
+        retrieved_count = metadata.get("retrieved_files", 0)
 
         return {
             "agent": "developer_agent",
             "status": report.get("status", "error"),
             "error": fatal_error_msg,
+            "error_code": "DEVELOPER_PARTIAL" if report.get("status") == "partial" else None,
             "completed_groups": len(analysis_results) - failed_groups_count,
             "failed_groups": failed_groups_count,
             "group_results": analysis_results,
             "final_report": report,
-            "answer": json.dumps(report, indent=2)
+            "answer": json.dumps(report, indent=2),
+            "tool_calls": retrieved_count,
+            "mcp_calls": retrieved_count,
+            "execution_time": round(time.time() - start_time, 3),
         }
 
-    return {
-    "agent": "developer_agent",
-    "status": "error",
-    "error": "Developer analysis did not produce a final report.",
-    "completed_groups": 0,
-    "failed_groups": 0,
-    "group_results": [],
-    "answer": "Developer analysis did not produce a final report."
-}
+    if is_repo_analysis:
+        metadata = (repository_code_context or {}).get("analysis_metadata") or {}
+        useful = metadata.get("useful_files", 0)
+        retrieved = metadata.get("retrieved_files", 0)
+        message = (
+            "Repository files were fetched, but no analyzable source groups "
+            f"were produced (useful files: {useful}, retrieved: {retrieved})."
+        )
+        if not repository_code_context:
+            message = "GitHub repository analysis did not return repository evidence."
+        return {
+            "agent": "developer_agent",
+            "status": "error",
+            "error": message,
+            "error_code": "REPOSITORY_EVIDENCE_INCOMPLETE",
+            "answer": None,
+            "completed_groups": 0,
+            "failed_groups": 0,
+            "group_results": [],
+            "tool_calls": 0,
+            "mcp_calls": 0,
+            "execution_time": round(time.time() - start_time, 3),
+        }
+
+    return _answer_developer_question(
+        query,
+        client=client,
+        model=model,
+        api_key=api_key,
+        test_mode=is_test_mode,
+        start_time=start_time,
+    )
 
 
 # ============================================================

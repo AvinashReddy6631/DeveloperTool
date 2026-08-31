@@ -1,16 +1,41 @@
+import os
+import sys
 import time
 import uuid
 import re
 import httpx
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from auth import (
+    auth_required,
+    authenticate_user,
+    ensure_auth_tables,
+    issue_token,
+    parse_bearer,
+    register_user,
+    revoke_token,
+    user_from_token,
+)
 from database import get_connection
 from orchestrator import orchestrate
 from config import APP_HOST, APP_PORT
+from quota import (
+    QuotaExceeded,
+    ensure_quota_tables,
+    get_usage,
+    refund_usage,
+    reserve_usage,
+)
 
 
 # ============================================================
@@ -36,6 +61,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
         "https://mcp-orchestrator-bay.vercel.app"
     ],
     allow_credentials=True,
@@ -88,6 +115,22 @@ class GitHubRepoOverviewRequest(BaseModel):
 # RESPONSE MODEL
 # ============================================================
 
+class AuthCredentials(BaseModel):
+
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=8, max_length=256)
+
+
+class UsageInfo(BaseModel):
+
+    ai_used: int
+    ai_limit: int
+    ai_remaining: int
+    repo_used: int
+    repo_limit: int
+    repo_remaining: int
+
+
 class QueryResponse(BaseModel):
 
     request_id: str
@@ -100,7 +143,107 @@ class QueryResponse(BaseModel):
 
     error: str | None = None
 
+    error_code: str | None = None
+
+    agent: str | None = None
+
     execution_trace: dict | None = None
+
+    usage: UsageInfo | None = None
+
+
+def github_headers():
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "Developer-Intelligence",
+    }
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def current_user_from_request(http_request: Request):
+    token = parse_bearer(http_request.headers.get("Authorization"))
+    if not token:
+        return None, None
+    return user_from_token(token), token
+
+
+def require_user(http_request: Request):
+    user, token = current_user_from_request(http_request)
+    if user:
+        return user, token
+    if not auth_required():
+        return None, None
+    raise HTTPException(
+        status_code=401,
+        detail="Sign in to use Developer Intelligence.",
+    )
+
+
+def is_repository_query(query: str) -> bool:
+    value = str(query or "").lower()
+
+    has_github = "github.com/" in value
+
+    has_intent = any(
+        marker in value
+        for marker in (
+            "analyze",
+            "analyse",
+            "review",
+            "inspect",
+            "audit",
+            "repository",
+            "repo",
+            "code review",
+            "security issues",
+            "security vulnerabilities",
+            "find bugs",
+            "identify bugs",
+            "find issues",
+            "identify issues",
+            "supplied repository evidence",
+        )
+    )
+
+    return has_github and has_intent
+
+def safe_error_message(error) -> str | None:
+    if error is None:
+        return None
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("code") or error)
+    return str(error)
+
+
+def log_request(event, **fields):
+    parts = [f"{key}={value}" for key, value in fields.items() if value is not None]
+    print(f"[mcp] {event} " + " ".join(parts))
+
+
+def quota_request_succeeded(status) -> bool:
+    return status == "success"
+
+
+def finalize_query_quota(user_id, consume_repo, reserved, keep):
+    """Keep a successful reservation; refund a failed one exactly once."""
+    if not user_id:
+        return None
+    if reserved and not keep:
+        return refund_usage(user_id, consume_repo)
+    return get_usage(user_id)
+
+
+@app.on_event("startup")
+def initialize_persistence():
+    try:
+        ensure_auth_tables()
+        ensure_quota_tables()
+        print("[mcp] Auth and quota tables ready.")
+    except Exception as exc:
+        print("[mcp] Persistence startup failed:", str(exc))
 
 
 # ============================================================
@@ -119,13 +262,9 @@ async def root():
 
 # ============================================================
 # HEALTH ENDPOINT
-# ============================================================
-
 @app.get("/health")
 async def health():
-
     try:
-
         connection = get_connection()
         connection.close()
 
@@ -136,7 +275,6 @@ async def health():
         }
 
     except Exception:
-
         return JSONResponse(
             status_code=503,
             content={
@@ -145,19 +283,95 @@ async def health():
                 "database": "disconnected"
             }
         )
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
+@app.post("/auth/register")
+async def register(credentials: AuthCredentials):
+    try:
+        user = register_user(credentials.email, credentials.password)
+        token = issue_token(user["id"])
+        usage = get_usage(user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "status": "success",
+        "token": token,
+        "user": {"id": user["id"], "email": user["email"]},
+        "usage": usage,
+    }
+
+
+@app.post("/auth/login")
+async def login(credentials: AuthCredentials):
+    try:
+        user = authenticate_user(credentials.email, credentials.password)
+        token = issue_token(user["id"])
+        usage = get_usage(user["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    return {
+        "status": "success",
+        "token": token,
+        "user": {"id": user["id"], "email": user["email"]},
+        "usage": usage,
+    }
+
+
+@app.post("/auth/logout")
+async def logout(http_request: Request):
+    _user, token = current_user_from_request(http_request)
+    if token:
+        revoke_token(token)
+    return {"status": "success"}
+
+
+@app.get("/auth/me")
+async def auth_me(http_request: Request):
+    user, _token = require_user(http_request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to use Developer Intelligence.")
+    return {
+        "status": "success",
+        "user": {"id": user["id"], "email": user["email"]},
+        "usage": get_usage(user["id"]),
+    }
+
+
+@app.get("/usage")
+async def read_usage(http_request: Request):
+    user, _token = require_user(http_request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to use Developer Intelligence.")
+    return {"status": "success", "usage": get_usage(user["id"])}
 
 
 # ============================================================
 # GITHUB REPOSITORY DISCOVERY ENDPOINT
 # ============================================================
 
+# ============================================================
+# GITHUB REPOSITORY DISCOVERY ENDPOINT
+# ============================================================
+
 @app.post("/github/repositories")
-async def discover_repositories(request: GitHubProfileRequest):
+async def discover_repositories(
+    request: GitHubProfileRequest,
+    http_request: Request,
+):
+    user, _token = require_user(http_request)
 
     url_val = request.profile_url.strip()
-    
-    # Extract the username. Allows raw usernames or full https://github.com/username URLs
-    match = re.search(r"(?:github\.com/)?([a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38})/?$", url_val)
+
+    # Extract the username. Allows raw usernames or full
+    # https://github.com/username URLs
+    match = re.search(
+        r"(?:github\.com/)?([a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38})/?$",
+        url_val,
+    )
     
     if not match:
         raise HTTPException(
@@ -168,7 +382,7 @@ async def discover_repositories(request: GitHubProfileRequest):
     username = match.group(1)
     
     api_url = f"https://api.github.com/users/{username}/repos?per_page=100&sort=updated"
-    headers = {"Accept": "application/vnd.github.v3+json"}
+    headers = github_headers()
     
     try:
         async with httpx.AsyncClient() as client:
@@ -222,7 +436,11 @@ async def discover_repositories(request: GitHubProfileRequest):
 # ============================================================
 
 @app.post("/github/repository/overview")
-async def get_repository_overview(request: GitHubRepoOverviewRequest):
+async def get_repository_overview(
+    request: GitHubRepoOverviewRequest,
+    http_request: Request,
+):
+    require_user(http_request)
     url_val = request.repository_url.strip()
     
     match = re.search(r"github\.com/([^/]+)/([^/?#\s]+)", url_val)
@@ -233,7 +451,7 @@ async def get_repository_overview(request: GitHubRepoOverviewRequest):
     repo_name = repo_name.replace(".git", "")
     
     api_base = f"https://api.github.com/repos/{owner}/{repo_name}"
-    headers = {"Accept": "application/vnd.github.v3+json"}
+    headers = github_headers()
     
     try:
         async with httpx.AsyncClient() as client:
@@ -256,8 +474,25 @@ async def get_repository_overview(request: GitHubRepoOverviewRequest):
             
             # 3. Fetch Tree (Recursive) to detect evidence
             tree_resp = await client.get(f"{api_base}/git/trees/{default_branch}?recursive=1", headers=headers, timeout=15.0)
-            tree_data = tree_resp.json() if tree_resp.status_code == 200 else {}
+            if tree_resp.status_code == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Repository tree was not found for branch '{default_branch}'.",
+                )
+            if tree_resp.status_code == 403 and "rate limit" in tree_resp.text.lower():
+                raise HTTPException(status_code=429, detail="GitHub API rate limit exceeded.")
+            if tree_resp.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"GitHub tree fetch failed: HTTP {tree_resp.status_code}.",
+                )
+            tree_data = tree_resp.json()
             paths = [item.get("path", "") for item in tree_data.get("tree", [])]
+            if not paths:
+                raise HTTPException(
+                    status_code=502,
+                    detail="GitHub returned an empty repository tree.",
+                )
             
             # Evidence detection helpers
             def find_paths(keywords):
@@ -361,6 +596,9 @@ async def global_exception_handler(
     exc: Exception
 ):
 
+    if isinstance(exc, HTTPException):
+        raise exc
+
     request_id = str(uuid.uuid4())
 
     print()
@@ -416,28 +654,24 @@ async def query_agent(
 
     query = request.query.strip()
 
-    # Preserve backward compatibility for existing clients/tests.
-    # The frontend will provide a real session_id for isolated memory.
-    session_id = (
+    user, _token = require_user(http_request)
+    user_id = user["id"] if user else None
+
+    client_session = (
         request.session_id.strip()
         if request.session_id
         else "default"
     )
+    session_id = (
+        f"{user_id}:{client_session}"
+        if user_id
+        else client_session
+    )
 
-    # Optional BYOK support:
-    # If the frontend sends X-OpenRouter-Key, the orchestrator
-    # can use that key for this request. If omitted, existing
-    # behavior continues using the server-configured key.
     user_openrouter_key = http_request.headers.get("X-OpenRouter-Key")
-    
-    if user_openrouter_key:
-        print("BYOK RECEIVED: YES")
-    else:
-        print("BYOK RECEIVED: NO")
-
-    # --------------------------------------------------------
-    # EMPTY QUERY
-    # --------------------------------------------------------
+    consume_repo = is_repository_query(query)
+    reserved = False
+    usage = get_usage(user_id) if user_id else None
 
     if not query:
 
@@ -449,37 +683,36 @@ async def query_agent(
             }
         )
 
-    # --------------------------------------------------------
-    # REQUEST LOG
-    # --------------------------------------------------------
-
-    print()
-    print("=" * 60)
-    print("MCP API REQUEST")
-    print("=" * 60)
-
-    print(
-        "Request ID:",
-        request_id
+    log_request(
+        "query.start",
+        request_id=request_id,
+        user_id=user_id,
+        session_id=session_id,
+        byok="yes" if user_openrouter_key else "no",
+        repo=consume_repo,
     )
-
-    print(
-        "Query:",
-        query
-    )
-
-    print(
-        "Session ID:",
-        session_id
-    )
-
-    print("=" * 60)
 
     try:
-
-        # ----------------------------------------------------
-        # ORCHESTRATOR
-        # ----------------------------------------------------
+        if user_id:
+            try:
+                usage = reserve_usage(user_id, consume_repo)
+                reserved = True
+            except QuotaExceeded as exc:
+                kind = "repository analysis" if exc.kind == "repo" else "AI request"
+                return QueryResponse(
+                    request_id=request_id,
+                    status="error",
+                    answer=None,
+                    execution_time=round(time.perf_counter() - start_time, 3),
+                    error=(
+                        f"Free plan {kind} quota has been reached. "
+                        "Upgrade is positioning only; checkout is not available."
+                    ),
+                    error_code="QUOTA_EXCEEDED",
+                    agent=None,
+                    execution_trace=None,
+                    usage=exc.usage,
+                )
 
         result = await orchestrate(
             query,
@@ -504,6 +737,13 @@ async def query_agent(
             result,
             dict
         ):
+            usage = finalize_query_quota(
+                user_id,
+                consume_repo,
+                reserved,
+                keep=False,
+            )
+            reserved = False
 
             return QueryResponse(
                 request_id=request_id,
@@ -514,7 +754,10 @@ async def query_agent(
                     "Orchestrator returned "
                     "an invalid result."
                 ),
-                execution_trace=None
+                error_code="INVALID_RESULT",
+                agent=None,
+                execution_trace=None,
+                usage=usage,
             )
 
         # ----------------------------------------------------
@@ -530,18 +773,10 @@ async def query_agent(
             "answer"
         )
 
-        error = result.get(
-            "error"
-        )
-
-        # FIX:
-        # Always define execution_trace before the response.
-        execution_trace = result.get(
-            "execution_trace"
-        )
-        # --------------------------------------------------------
-        # FRIENDLY OPENROUTER RATE-LIMIT MESSAGE
-        # --------------------------------------------------------
+        error = safe_error_message(result.get("error"))
+        error_code = result.get("error_code")
+        agent = result.get("agent")
+        execution_trace = result.get("execution_trace")
 
         if status == "error" and error:
 
@@ -558,15 +793,13 @@ async def query_agent(
                     "The free AI model limit has been reached for today. "
                     "Your MCP system is working correctly. "
                     "Please wait for the limit to reset and try again."
-        )
-
-        # ----------------------------------------------------
-        # STATUS VALIDATION
-        # ----------------------------------------------------
+                )
+                error_code = error_code or "PROVIDER_RATE_LIMIT"
 
         if status not in [
             "success",
-            "error"
+            "error",
+            "partial",
         ]:
 
             status = "error"
@@ -577,35 +810,26 @@ async def query_agent(
                     "Orchestrator returned "
                     "an invalid status."
                 )
+                error_code = error_code or "INVALID_STATUS"
 
-        # ----------------------------------------------------
-        # RESPONSE LOG
-        # ----------------------------------------------------
-
-        print(
-            "Request ID:",
-            request_id
+        keep_quota = quota_request_succeeded(status)
+        usage = finalize_query_quota(
+            user_id,
+            consume_repo,
+            reserved,
+            keep=keep_quota,
         )
+        reserved = False
 
-        print(
-            "Status:",
-            status
+        log_request(
+            "query.finish",
+            request_id=request_id,
+            user_id=user_id,
+            session_id=session_id,
+            agent=agent,
+            status=status,
+            execution_time=execution_time,
         )
-
-        print(
-            "Execution Time:",
-            f"{execution_time:.3f}s"
-        )
-
-        print(
-            "MCP API REQUEST COMPLETED"
-        )
-
-        print("=" * 60)
-
-        # ----------------------------------------------------
-        # RESPONSE
-        # ----------------------------------------------------
 
         return QueryResponse(
             request_id=request_id,
@@ -613,8 +837,17 @@ async def query_agent(
             answer=answer,
             execution_time=execution_time,
             error=error,
-            execution_trace=execution_trace
+            error_code=error_code,
+            agent=agent,
+            execution_trace=execution_trace,
+            usage=usage,
         )
+
+    except HTTPException:
+        if reserved and user_id:
+            usage = refund_usage(user_id, consume_repo)
+            reserved = False
+        raise
 
     except Exception as exc:
 
@@ -628,6 +861,8 @@ async def query_agent(
         # ----------------------------------------------------
 
         error_message = str(exc)
+
+        print("[mcp] query.exception", type(exc).__name__)
 
         # ----------------------------------------------------
         # FRIENDLY ERROR HANDLING
@@ -645,17 +880,6 @@ async def query_agent(
                 "correctly. Please try again later."
             )
 
-        elif (
-            "401" in error_message
-            or "Invalid API key" in error_message
-            or "authentication" in error_message.lower()
-        ):
-
-            error_message = (
-                "The AI service authentication failed. "
-                "Please check the API configuration."
-            )
-
         elif "timeout" in error_message.lower():
 
             error_message = (
@@ -667,36 +891,22 @@ async def query_agent(
         # FAILURE LOG
         # ----------------------------------------------------
 
-        print()
-        print("=" * 60)
-        print("MCP API REQUEST FAILED")
-        print("=" * 60)
-
-        print(
-            "Request ID:",
-            request_id
+        usage = finalize_query_quota(
+            user_id,
+            consume_repo,
+            reserved,
+            keep=False,
         )
+        reserved = False
 
-        print(
-            "Original Error:",
-            str(exc)
+        log_request(
+            "query.failed",
+            request_id=request_id,
+            user_id=user_id,
+            session_id=session_id,
+            status="error",
+            execution_time=execution_time,
         )
-
-        print(
-            "User Error:",
-            error_message
-        )
-
-        print(
-            "Execution Time:",
-            f"{execution_time:.3f}s"
-        )
-
-        print("=" * 60)
-
-        # ----------------------------------------------------
-        # FRIENDLY ERROR RESPONSE
-        # ----------------------------------------------------
 
         return QueryResponse(
             request_id=request_id,
@@ -704,8 +914,16 @@ async def query_agent(
             answer=None,
             execution_time=execution_time,
             error=error_message,
-            execution_trace=None
+            error_code="QUERY_FAILED",
+            agent=None,
+            execution_trace=None,
+            usage=usage,
         )
+
+    finally:
+        if reserved and user_id:
+            usage = refund_usage(user_id, consume_repo)
+            reserved = False
 
 
 # ============================================================

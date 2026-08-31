@@ -6,55 +6,65 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ========================================
-   MCP ORCHESTRATOR - GLOBAL THEME
+   DEVELOPER INTELLIGENCE — DESIGN SYSTEM
 ======================================== */
 
 :root {
-  --background: #02030a;
-  --foreground: #f7f7ff;
+  --background: #000000;
+  --foreground: #fafafa;
+  --surface: #09090b;
+  --elevated: #111111;
 
-  --card: #080912;
-  --card-foreground: #f7f7ff;
+  --card: #09090b;
+  --card-foreground: #fafafa;
 
-  --popover: #080912;
-  --popover-foreground: #f7f7ff;
+  --popover: #111111;
+  --popover-foreground: #fafafa;
 
-  --primary: #9a4dff;
-  --primary-foreground: #ffffff;
+  --primary: #fafafa;
+  --primary-hover: #e4e4e7;
+  --primary-soft: #18181b;
+  --primary-foreground: #09090b;
 
-  --secondary: #111322;
-  --secondary-foreground: #ffffff;
+  --secondary: #18181b;
+  --secondary-foreground: #fafafa;
 
-  --muted: #111322;
-  --muted-foreground: #888da4;
+  --muted: #18181b;
+  --muted-foreground: #a1a1aa;
 
-  --accent: #9a4dff;
-  --accent-foreground: #ffffff;
+  --ai: #d4d4d8;
+  --accent: #a1a1aa;
+  --accent-foreground: #09090b;
 
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --info: #71717a;
   --destructive: #ef4444;
 
-  --border: rgba(255, 255, 255, 0.08);
-  --input: rgba(255, 255, 255, 0.08);
-  --ring: #9a4dff;
+  --border: #27272a;
+  --input: #27272a;
+  --ring: #d4d4d8;
 
-  --radius: 0.75rem;
+  --radius: 16px;
+  --radius-control: 8px;
+  --radius-input: 12px;
+  --radius-search: 24px;
+  --shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --space: 8px;
 
-  --sidebar: #080912;
-  --sidebar-foreground: #f7f7ff;
-  --sidebar-primary: #9a4dff;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #111322;
-  --sidebar-accent-foreground: #ffffff;
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-ring: #9a4dff;
+  --sidebar: #09090b;
+  --sidebar-foreground: #fafafa;
+  --sidebar-primary: #fafafa;
+  --sidebar-primary-foreground: #09090b;
+  --sidebar-accent: #18181b;
+  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border: #27272a;
+  --sidebar-ring: #d4d4d8;
 
   --font-sans: "Geist Variable", Inter, system-ui, sans-serif;
   --font-heading: "Geist Variable", Inter, system-ui, sans-serif;
 }
-
-/* ========================================
-   TAILWIND THEME
-======================================== */
 
 @theme inline {
   --font-sans: var(--font-sans);
@@ -62,39 +72,22 @@
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
-
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
-
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
-
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
-
   --color-destructive: var(--destructive);
-
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
-
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -103,44 +96,76 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-}
 
-/* ========================================
-   DARK MODE
-======================================== */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-3xl: 24px;
+  --radius-4xl: 24px;
+}
 
 .dark {
-  --background: #02030a;
-  --foreground: #f7f7ff;
-
-  --card: #080912;
-  --card-foreground: #f7f7ff;
-
-  --popover: #080912;
-  --popover-foreground: #f7f7ff;
-
-  --primary: #9a4dff;
-  --primary-foreground: #ffffff;
-
-  --secondary: #111322;
-  --secondary-foreground: #ffffff;
-
-  --muted: #111322;
-  --muted-foreground: #888da4;
-
-  --accent: #9a4dff;
-  --accent-foreground: #ffffff;
-
+  --background: #000000;
+  --foreground: #fafafa;
+  --surface: #09090b;
+  --elevated: #111111;
+  --card: #09090b;
+  --card-foreground: #fafafa;
+  --popover: #111111;
+  --popover-foreground: #fafafa;
+  --primary: #fafafa;
+  --primary-hover: #e4e4e7;
+  --primary-soft: #18181b;
+  --primary-foreground: #09090b;
+  --secondary: #18181b;
+  --secondary-foreground: #fafafa;
+  --muted: #18181b;
+  --muted-foreground: #a1a1aa;
+  --ai: #d4d4d8;
+  --accent: #a1a1aa;
+  --accent-foreground: #09090b;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --info: #71717a;
   --destructive: #ef4444;
-
-  --border: rgba(255, 255, 255, 0.08);
-  --input: rgba(255, 255, 255, 0.08);
-  --ring: #9a4dff;
+  --border: #27272a;
+  --input: #27272a;
+  --ring: #d4d4d8;
+  --shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
 }
 
-/* ========================================
-   GLOBAL RESET
-======================================== */
+html.light,
+:root.light {
+  --background: #ffffff;
+  --foreground: #09090b;
+  --surface: #fafafa;
+  --elevated: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #09090b;
+  --popover: #ffffff;
+  --popover-foreground: #09090b;
+  --primary: #09090b;
+  --primary-hover: #18181b;
+  --primary-soft: #f4f4f5;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #09090b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --ai: #3f3f46;
+  --accent: #71717a;
+  --accent-foreground: #09090b;
+  --success: #16a34a;
+  --warning: #d97706;
+  --info: #52525b;
+  --destructive: #dc2626;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #3f3f46;
+  --shadow: 0 10px 28px rgba(0, 0, 0, 0.06);
+}
 
 * {
   box-sizing: border-box;
@@ -153,49 +178,38 @@ html {
   width: 100%;
   min-height: 100%;
   scroll-behavior: smooth;
-  background: #02030a;
+  background: var(--background);
   font-family: var(--font-sans);
 }
 
 body {
   margin: 0;
   padding: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   width: 100%;
   min-width: 320px;
   min-height: 100vh;
-
-  background: #02030a;
-  color: #f7f7ff;
-
+  min-height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
   font-family: var(--font-sans);
-
+  font-size: 16px;
+  line-height: 1.55;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
   overflow-x: hidden;
 }
-
-/* ========================================
-   IMPORTANT:
-   REMOVE THE OLD 1126px ROOT LIMIT
-======================================== */
 
 #root {
   width: 100%;
   min-height: 100vh;
   margin: 0;
   padding: 0;
-
   text-align: left;
-
-  background: #02030a;
+  background: var(--background);
 }
-
-/* ========================================
-   TYPOGRAPHY
-======================================== */
 
 h1,
 h2,
@@ -204,6 +218,8 @@ h4,
 h5,
 h6 {
   font-family: var(--font-heading);
+  letter-spacing: -0.04em;
+  font-weight: 560;
 }
 
 button,
@@ -213,53 +229,59 @@ select {
   font-family: inherit;
 }
 
-/* ========================================
-   SELECTION
-======================================== */
-
 ::selection {
-  background: rgba(154, 77, 255, 0.35);
-  color: white;
+  background: var(--foreground);
+  color: var(--background);
 }
-
-/* ========================================
-   SCROLLBAR
-======================================== */
 
 ::-webkit-scrollbar {
   width: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #02030a;
+  background: var(--background);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(150, 90, 255, 0.35);
+  background: var(--border);
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(150, 90, 255, 0.6);
+  background: #3f3f46;
 }
 
-/* ========================================
-   MOBILE
-======================================== */
+html,
+body,
+#root {
+  max-width: 100%;
+  overflow-x: clip;
+}
 
-@media (max-width: 650px) {
-  body {
-    overflow-x: hidden;
+@keyframes di-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.992);
   }
-
-  #root {
-    width: 100%;
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
-/* ========================================
-   SHADCN BASE
-======================================== */
+.di-page-enter {
+  animation: di-page-enter 0.45s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .di-page-enter {
+    animation: none;
+  }
+}
 
 @layer base {
   * {
